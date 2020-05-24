@@ -16,12 +16,12 @@ func main() {
 
 	fmt.Printf("%#v\n", config)
 
-	rsl := hectoserver.NewMultiResolver(config.Servers[0].Resolvers)
-	if err := rsl.Serve(context.Background()); err != nil {
+	srv := hectoserver.NewServer(config.Servers[0].Resolvers)
+	if err := srv.Serve(context.Background()); err != nil {
 		panic(err)
 	}
 
-	err = dns.ListenAndServe(":5333", "udp", rsl)
+	err = dns.ListenAndServe(":5333", "udp", srv)
 	if err != nil {
 		panic(err)
 	}

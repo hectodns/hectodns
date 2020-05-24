@@ -1,41 +1,59 @@
 package main
 
 import (
-	"encoding/binary"
+	"bufio"
+	"bytes"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"net/http"
 	"os"
 
 	"github.com/miekg/dns"
 )
 
 func main() {
+	r := bufio.NewReader(os.Stdin)
+	w := bufio.NewWriter(os.Stdout)
+	buf := bufio.NewReadWriter(r, w)
+
 	for {
-		var length uint16
-		if err := binary.Read(os.Stdin, binary.BigEndian, &length); err != nil {
-			panic(err)
-		}
-
-		buf := make([]byte, length)
-		_, err := os.Stdin.Read(buf)
+		httpreq, err := http.ReadRequest(buf.Reader)
+		os.Stderr.Write([]byte(fmt.Sprintf("%#v\n", httpreq)))
 		if err != nil {
 			panic(err)
 		}
 
-		var req dns.Msg
-		err = req.Unpack(buf)
+		b, err := ioutil.ReadAll(io.LimitReader(httpreq.Body, httpreq.ContentLength))
 		if err != nil {
 			panic(err)
 		}
 
-		var resp dns.Msg
-		resp.SetRcode(&req, dns.RcodeRefused)
-		b, err := resp.Pack()
+		httpreq.Body.Close()
+		os.Stderr.Write([]byte("closed\n"))
+
+		var dnsreq dns.Msg
+		err = dnsreq.Unpack(b)
 		if err != nil {
 			panic(err)
 		}
 
-		if err := binary.Write(os.Stdout, binary.BigEndian, uint16(len(b))); err != nil {
+		os.Stderr.Write([]byte(fmt.Sprintf("%#v\n", dnsreq)))
+
+		var dnsresp dns.Msg
+		dnsresp.SetRcode(&dnsreq, dns.RcodeRefused)
+		b, err = dnsresp.Pack()
+		if err != nil {
 			panic(err)
 		}
-		os.Stdout.Write(b)
+
+		httpresp := &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: int64(len(b)),
+			Body:          ioutil.NopCloser(bytes.NewBuffer(b)),
+		}
+
+		httpresp.Write(buf)
+		buf.Flush()
 	}
 }
