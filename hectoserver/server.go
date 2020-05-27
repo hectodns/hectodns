@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	httpMethod = http.MethodPost
-	httpURL    = "/dns-query"
+	httpMethod    = http.MethodPost
+	httpURL       = "/dns-query"
+	httpUserAgent = "HectoDNS"
 )
 
 // Error represents a server error.
@@ -32,97 +33,76 @@ var (
 	// ErrStarted is returned on attempt to start resolver that is
 	// already started.
 	ErrStarted = Error{err: "already started"}
+
+	// errContentLength is returned on when content length is not
+	// set in HTTP response headers.
+	errContentLength = Error{err: "content length is not known"}
 )
 
 type Request struct {
 	// ID is a unique identifier of the request.
 	ID int64
 
-	// Body is the network-encoded representation of the request.
-	//
-	// Depending on the protocol for communication with a resolver,
-	// it could be an text-encoded HTTP request or binary-encoded DNS
-	// query.
-	Body io.Reader
+	Body dns.Msg
 
 	// At is a request submission timestamp.
 	At time.Time
 }
 
-func NewRequest(dnsreq *dns.Msg) (*Request, error) {
-	b, err := dnsreq.Pack()
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq, err := http.NewRequest(httpMethod, httpURL, bytes.NewBuffer(b))
-	if err != nil {
-		return nil, err
-	}
-
-	var body bytes.Buffer
-	if err = httpReq.Write(&body); err != nil {
-		return nil, err
-	}
-
-	return &Request{
+func NewRequest(dnsreq dns.Msg) Request {
+	return Request{
 		ID:   int64(dnsreq.Id),
-		Body: &body,
+		Body: dnsreq,
 		At:   time.Now(),
-	}, nil
+	}
 }
 
-// Bytes returns bytes representation of the request body.
-func (r *Request) Bytes() ([]byte, error) {
-	return ioutil.ReadAll(r.Body)
+func (r *Request) Write(w io.Writer) error {
+	b, err := r.Body.Pack()
+	if err != nil {
+		return err
+	}
+
+	httpreq, err := http.NewRequest(httpMethod, httpURL, bytes.NewBuffer(b))
+	if err != nil {
+		return err
+	}
+
+	httpreq.Header.Set("user-agent", httpUserAgent)
+	return httpreq.Write(w)
 }
 
 type Response struct {
 	ID int64
 
+	// StatusCode is numerical status of the HTTP response, e.g. 200.
 	StatusCode int
 
+	// Header maps HTTP header keys to values. Keys in the map are
+	// canonicalized (see http.CanonicalHeaderKey).
 	Header http.Header
 
-	Body io.Reader
+	// Body respresents DNS response.
+	Body dns.Msg
 }
 
-func (resp *Response) UnmarshalDNS() (*dns.Msg, error) {
-	b, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var msg dns.Msg
-	err = msg.Unpack(b)
-	if err != nil {
-		return nil, err
-	}
-	return &msg, nil
-}
-
-// ResponseReader is used by a Conn to retrieve a response from the stdout.
-//
-// This inferface is used to support multiple communication protocols with
-// processes responsible for resolving the DNS requests.
-type ResponseReader interface {
-	Read(r *bufio.Reader) (*Response, error)
-}
-
-type httpRR struct {
-}
-
-func (rr httpRR) Read(r *bufio.Reader) (*Response, error) {
+// ReadResponse reads and returns HTTP response with encapsulated DNS
+// response from r.
+func ReadResponse(r *bufio.Reader) (*Response, error) {
 	httpresp, err := http.ReadResponse(r, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	log.Printf("!!! %#v\n", httpresp)
-
 	defer httpresp.Body.Close()
 
-	b, err := ioutil.ReadAll(io.LimitReader(httpresp.Body, httpresp.ContentLength))
+	// ContentLength is unknown, response can't be extracted.
+	bodyLen := httpresp.ContentLength
+	if bodyLen < 0 {
+		return nil, errContentLength
+	}
+
+	b, err := ioutil.ReadAll(io.LimitReader(httpresp.Body, bodyLen))
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +117,7 @@ func (rr httpRR) Read(r *bufio.Reader) (*Response, error) {
 		ID:         int64(dnsresp.Id),
 		StatusCode: httpresp.StatusCode,
 		Header:     httpresp.Header,
-		Body:       bytes.NewBuffer(b),
+		Body:       dnsresp,
 	}, nil
 }
 
@@ -164,8 +144,9 @@ func NewServer(cc []ResolverConfig) *Server {
 	}
 	for i, c := range cc {
 		srv.handlers[i] = &Conn{
-			Procname:       c.Name,
-			ResponseReader: httpRR{},
+			Procname:        c.Name,
+			Procopts:        derefStrings(c.Options, nil),
+			MaxIdleRequests: derefInt(c.MaxIdle, DefaultMaxIdleRequests),
 		}
 	}
 	return &srv
@@ -182,17 +163,14 @@ func (srv *Server) Serve(ctx context.Context) error {
 }
 
 func (srv *Server) ServeDNS(w dns.ResponseWriter, dnsreq *dns.Msg) {
-	req, err := NewRequest(dnsreq)
-	if err != nil {
-		panic(err)
-	}
+	req := NewRequest(*dnsreq)
 
 	var servfail dns.Msg
 	servfail.SetRcode(dnsreq, dns.RcodeServerFailure)
 
 	for i, h := range srv.handlers {
 		log.Println(i)
-		resp, err := h.Handle(context.TODO(), req)
+		resp, err := h.Handle(context.TODO(), &req)
 		log.Printf("INFO: %d processed %#v", i, resp)
 
 		if err != nil {
@@ -202,13 +180,7 @@ func (srv *Server) ServeDNS(w dns.ResponseWriter, dnsreq *dns.Msg) {
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			dnsresp, err := resp.UnmarshalDNS()
-			if err != nil {
-				log.Println("FATAL: 2", err.Error())
-				w.WriteMsg(&servfail)
-				return
-			}
-			w.WriteMsg(dnsresp)
+			w.WriteMsg(&resp.Body)
 			return
 		}
 	}

@@ -14,7 +14,7 @@ import (
 
 const (
 	// DefaultMaxIdleRequests is a number of maximum unprocessed requests.
-	DefaultMaxIdleRequests = 1000
+	DefaultMaxIdleRequests = 1024
 )
 
 type connRW struct {
@@ -40,10 +40,8 @@ type Conn struct {
 	Procopts []string
 
 	// MaxIdleRequests is the maximum requests waiting for processing,
-	// when stet to zero, defaults to DefaultMaxIdleRequests.
+	// when stet to zero, no idle requests are allowed.
 	MaxIdleRequests int
-
-	ResponseReader ResponseReader
 
 	// started is used to keep track of resolver state.
 	started int64
@@ -122,16 +120,11 @@ func (conn *Conn) writer(ctx context.Context, wr io.WriteCloser) (err error) {
 	for {
 		select {
 		case pub := <-conn.sendC:
-			buf, err := pub.req.Bytes()
-			if err != nil {
-				return err
-			}
-
 			conn.pubmu.Lock()
 			conn.pubmap[pub.req.ID] = pub
 			conn.pubmu.Unlock()
 
-			_, err = wr.Write(buf)
+			err = pub.req.Write(wr)
 			if err != nil {
 				return err
 			}
@@ -151,7 +144,7 @@ func (conn *Conn) reader(ctx context.Context, rd io.ReadCloser) (err error) {
 	bufrd := bufio.NewReader(rd)
 
 	for {
-		resp, err := conn.ResponseReader.Read(bufrd)
+		resp, err := ReadResponse(bufrd)
 		if err != nil {
 			return err
 		}

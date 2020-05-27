@@ -16,6 +16,16 @@ type ResolverConfig struct {
 
 	// Options is a list of additional options to execute the resolver.
 	Options *[]string `hcl:"options,attr"`
+
+	Preload *bool `hcl:"preload,attr"`
+
+	// Processes is a number of processes to start for handling requests.
+	// Default value is 1.
+	Processes *int `hcl:"processes,attr"`
+
+	// MaxIdle is a maximum client requests waiting for processing.
+	// Default value is 1024.
+	MaxIdle *int `hcl:"maxidle,attr"`
 }
 
 // ServerConfig is a configuration for a single server instance.
@@ -76,4 +86,18 @@ func DecodeConfig(filename string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+func derefInt(v *int, def int) int {
+	if v == nil {
+		return def
+	}
+	return *v
+}
+
+func derefStrings(ss *[]string, def []string) []string {
+	if ss == nil {
+		return def
+	}
+	return *ss
 }
