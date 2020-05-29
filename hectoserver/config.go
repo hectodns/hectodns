@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pkg/errors"
+	//"github.com/netrack/hectodns/nilptr"
 )
 
 // ResolverConfig is a configuration of a single resolver.
@@ -15,17 +16,17 @@ type ResolverConfig struct {
 	Name string `hcl:"resolve,label"`
 
 	// Options is a list of additional options to execute the resolver.
-	Options *[]string `hcl:"options,attr"`
+	Options []string `hcl:"options,optional"`
 
-	Preload *bool `hcl:"preload,attr"`
+	Preload bool `hcl:"preload,optional"`
 
 	// Processes is a number of processes to start for handling requests.
 	// Default value is 1.
-	Processes *int `hcl:"processes,attr"`
+	Processes int `hcl:"processes,optional"`
 
 	// MaxIdle is a maximum client requests waiting for processing.
 	// Default value is 1024.
-	MaxIdle *int `hcl:"maxidle,attr"`
+	MaxIdle int `hcl:"maxidle,optional"`
 }
 
 // ServerConfig is a configuration for a single server instance.

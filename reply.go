@@ -55,5 +55,7 @@ func main() {
 
 		httpresp.Write(buf)
 		buf.Flush()
+
+		panic("XXX")
 	}
 }

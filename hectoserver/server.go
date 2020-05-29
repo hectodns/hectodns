@@ -30,10 +30,6 @@ var (
 	// within a configured duration.
 	ErrTimeout = Error{err: "request processing timeout"}
 
-	// ErrStarted is returned on attempt to start resolver that is
-	// already started.
-	ErrStarted = Error{err: "already started"}
-
 	// errContentLength is returned on when content length is not
 	// set in HTTP response headers.
 	errContentLength = Error{err: "content length is not known"}
@@ -138,18 +134,30 @@ type Server struct {
 	handlers []HandleServer
 }
 
-func NewServer(cc []ResolverConfig) *Server {
+func NewServer(cc []ResolverConfig) (*Server, error) {
 	srv := Server{
 		handlers: make([]HandleServer, len(cc)),
 	}
 	for i, c := range cc {
-		srv.handlers[i] = &Conn{
-			Procname:        c.Name,
-			Procopts:        derefStrings(c.Options, nil),
-			MaxIdleRequests: derefInt(c.MaxIdle, DefaultMaxIdleRequests),
+		c := c
+		newConn := func() *Conn {
+			return &Conn{
+				Procname:        c.Name,
+				Procopts:        c.Options,
+				MaxIdleRequests: c.MaxIdle,
+			}
 		}
+
+		// Ensure that one process starts when the configured number
+		// of processes is not defined. (it's either 0 or not set).
+		poolCap := c.Processes
+		if poolCap < 1 {
+			poolCap = 1
+		}
+
+		srv.handlers[i] = &ConnPool{Cap: poolCap, New: newConn}
 	}
-	return &srv
+	return &srv, nil
 }
 
 func (srv *Server) Serve(ctx context.Context) error {

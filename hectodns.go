@@ -16,7 +16,11 @@ func main() {
 
 	fmt.Printf("%#v\n", config)
 
-	srv := hectoserver.NewServer(config.Servers[0].Resolvers)
+	srv, err := hectoserver.NewServer(config.Servers[0].Resolvers)
+	if err != nil {
+		panic(err)
+	}
+
 	if err := srv.Serve(context.Background()); err != nil {
 		panic(err)
 	}
