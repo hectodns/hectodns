@@ -88,6 +88,7 @@ type Conn struct {
 	// returned response.
 	pubs int32
 
+	stopC chan struct{}
 	sendC chan pub
 }
 
@@ -134,6 +135,12 @@ func (conn *Conn) forkexec() (proc *os.Process, r, w *os.File, err error) {
 // start resolver that is already started.
 var ErrConnStarted = Error{err: "already started"}
 
+// Serve starts a process with configured arguments, creates communication
+// pipes to send and receive DNS requests over HTTP protocol.
+//
+// Use Handle method in order to process request. When the processing is
+// done, terminate connection gracefully using Shutdown method or use
+// Close to terminate connection immediately.
 func (conn *Conn) Serve(ctx context.Context) (err error) {
 	// Trigger the ConnState callback on the StateNew.
 	conn.setState(StateNew, StateNew)
@@ -167,6 +174,7 @@ func (conn *Conn) Serve(ctx context.Context) (err error) {
 	conn.proc = proc
 	conn.pubmap = make(map[int64]pub, maxidle)
 	conn.sendC = make(chan pub, maxidle)
+	conn.stopC = make(chan struct{}, 1)
 
 	go conn.writer(ctx, w)
 	go conn.reader(ctx, r)
@@ -176,21 +184,26 @@ func (conn *Conn) Serve(ctx context.Context) (err error) {
 
 type pub struct {
 	req *Request
-	rw  ResponseWriter
-	C   chan<- struct{}
+	C   chan<- *Response
 }
 
 // writer is a goroutine that writes requets to the pipe connected
 // to the previously spawned process in order to handle requests.
 func (conn *Conn) writer(ctx context.Context, wr io.WriteCloser) (err error) {
-	defer func() {
-		err = checkerr(err, wr.Close())
-		conn.shutdown()
-	}()
+	defer wr.Close()
+
+	// Either on pipe error (failed attempt to write request to
+	// the client, signal master goroutine to close the reader.
+	defer conn.close(false)
 
 	for {
 		select {
-		case pub := <-conn.sendC:
+		case pub, ok := <-conn.sendC:
+			// Channel is closed and no more requests for this incarnation
+			// will be available, exit without errors.
+			if !ok {
+				return nil
+			}
 			conn.pubmu.Lock()
 			conn.pubmap[pub.req.ID] = pub
 			conn.pubmu.Unlock()
@@ -199,73 +212,153 @@ func (conn *Conn) writer(ctx context.Context, wr io.WriteCloser) (err error) {
 			if err != nil {
 				return err
 			}
+		case <-conn.stopC:
+			return nil
 		case <-ctx.Done():
 			return nil
 		}
 	}
 }
 
-// reader is a goroutine that reades responses (not necessarily in order)
-// from the resolver process.
-func (conn *Conn) reader(ctx context.Context, rd io.ReadCloser) (err error) {
-	defer func() {
-		err = checkerr(err, rd.Close())
-		conn.shutdown()
-	}()
+type chanResponse struct {
+	resp *Response
+	err  error
+}
 
-	bufrd := bufio.NewReader(rd)
+// The chanReader is a wrapper around connection reader used to
+// create a channel of Responses by continuosly fetching responses
+// from the connection.
+type chanReader struct {
+	bufr *bufio.Reader
 
+	once sync.Once
+	ch   chan chanResponse
+}
+
+// read starts and inifinite loop of reading the responses from
+// the connection. When the read call returns an error, a submission
+// channel closes and loop terminates.
+func (r *chanReader) read() {
 	for {
-		resp, err := ReadResponse(bufrd)
+		resp, err := ReadResponse(r.bufr)
+		r.ch <- chanResponse{resp, err}
+
 		if err != nil {
-			return err
+			close(r.ch)
+			return
 		}
-
-		conn.pubmu.Lock()
-		req, ok := conn.pubmap[resp.ID]
-		if ok {
-			delete(conn.pubmap, resp.ID)
-		}
-		conn.pubmu.Unlock()
-
-		if !ok {
-			// Simply ingore unrecognized response.
-			continue
-		}
-
-		// Write response and close the channel after to release resources.
-		req.C <- struct{}{}
-		req.rw.Write(resp)
-		close(req.C)
-
-		atomic.AddInt32(&conn.pubs, -1)
 	}
 }
 
-func (conn *Conn) shutdown() {
-	conn.setState(StateStarted, StateClosed)
+// The start creates a receive channel to deliver responses to clients,
+// spawns a new goroutine to read responses from the reader and send
+// them through the channel.
+func (r *chanReader) start() {
+	r.ch = make(chan chanResponse, 1)
+	go r.read()
+}
+
+// C returns a read-only channel of response plus error.
+func (r *chanReader) C() <-chan chanResponse {
+	r.once.Do(r.start)
+	return r.ch
+}
+
+// reader is a goroutine that reades responses (not necessarily in order)
+// from the resolver process.
+func (conn *Conn) reader(ctx context.Context, rd io.ReadCloser) (err error) {
+	defer rd.Close()
+
+	// When the reader is closed due to pipe error (failed to read
+	// response from the connection channel). Then this goroutine
+	// must signal to the master goroutine to terminate the writer
+	// as well.
+	defer conn.close(false)
+
+	// Channel reader starts a goroutine to read responses sequentially,
+	// this entity is useful in conjunction with select statement.
+	//
+	// Closing the passed reader will cause EOF error being written to
+	// the response channel.
+	reader := chanReader{bufr: bufio.NewReader(rd)}
+
+	for {
+		select {
+		case chanresp := <-reader.C():
+			resp, err := chanresp.resp, chanresp.err
+			if err != nil {
+				return err
+			}
+
+			// Find a channel where to write the response, the request
+			// and response identifiers must match in order to find the
+			// original request.
+			conn.pubmu.Lock()
+			pub, ok := conn.pubmap[resp.ID]
+			if ok {
+				delete(conn.pubmap, resp.ID)
+			}
+			conn.pubmu.Unlock()
+
+			if !ok {
+				// Simply ingore unrecognized response.
+				continue
+			}
+
+			pub.C <- resp
+			close(pub.C)
+
+		// Handle cancellations propagated from the Serve call, it's
+		// likely such calls are initialited by the API users, therfore
+		// terminate connections.
+		case <-ctx.Done():
+			return nil
+		case <-conn.stopC:
+			return nil
+		}
+	}
+}
+
+func (conn *Conn) close(graceful bool) {
+	conn.procmu.Lock()
+	defer conn.procmu.Unlock()
+
+	// Try to transition the state of the connection to the closed,
+	// when the connection is already in a closed state, exit.
+	if !conn.setState(StateStarted, StateClosed) {
+		return
+	}
+
+	conn.proc.Kill()
+	conn.proc.Wait()
+
+	// Terminate the goroutines at first, and only then close the
+	// channel for processing requests.
+	close(conn.stopC)
+	close(conn.sendC)
+
+	conn.pubmap = nil
+	conn.proc = nil
 }
 
 func (conn *Conn) Shutdown() error {
+	conn.close(true)
 	return nil
 }
 
+// Close immediately kills the process all unprocessed requests will be
+// removed. For a graceful shutdown, use Shutdown.
+//
+// Once Close has been called on a connection, it may not be reused; future
+// calls to methods such as Handle will return ErrConnClosed.
 func (conn *Conn) Close() error {
+	conn.close(false)
 	return nil
 }
 
 // ErrConnClosed is returned by the Conn's Handle method after a call
 // to Shutdown or Close method.
 var ErrConnClosed = Error{err: "connection closed"}
-
-type connRW struct {
-	resp *Response
-}
-
-func (crw *connRW) Write(resp *Response) error {
-	crw.resp = resp
-	return nil
-}
 
 // Handle implements Handler interface.
 //
@@ -274,26 +367,23 @@ func (crw *connRW) Write(resp *Response) error {
 //
 // After Shutdown or Close, the returned error is ErrConnClosed.
 func (conn *Conn) Handle(ctx context.Context, req *Request) (*Response, error) {
-	var rw connRW
-
 	if !conn.state.is(StateStarted) {
 		return nil, ErrConnClosed
 	}
-	println("HANDLE!!!!")
 
 	// Create a buffered channel in order to prevent locking of the
 	// reader goroutine on submission of the response.
-	respC := make(chan struct{}, 1)
-	conn.sendC <- pub{req: req, rw: &rw, C: respC}
+	respC := make(chan *Response, 1)
+	conn.sendC <- pub{req: req, C: respC}
 
 	// Increment the number of requests submitted for processing.
 	atomic.AddInt32(&conn.pubs, 1)
 
 	select {
-	case <-respC:
+	case resp := <-respC:
 		// Decrement number of unprocessed requests.
 		atomic.AddInt32(&conn.pubs, -1)
-		return rw.resp, nil
+		return resp, nil
 	case <-ctx.Done():
 		return nil, ErrTimeout
 	}
