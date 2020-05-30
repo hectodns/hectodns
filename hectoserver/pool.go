@@ -3,6 +3,7 @@ package hectoserver
 import (
 	"context"
 	"log"
+	"sync"
 	"sync/atomic"
 )
 
@@ -15,8 +16,12 @@ type ConnPool struct {
 	// multiple clones of the same connection.
 	New func() *Conn
 
+	mu    sync.RWMutex
 	conns []*Conn
-	cap   int64
+	ctx   context.Context
+
+	pos int32
+	cap int32
 }
 
 func (pool *ConnPool) Serve(ctx context.Context) error {
@@ -33,19 +38,41 @@ func (pool *ConnPool) Serve(ctx context.Context) error {
 	}
 
 	pool.conns = conns
-	pool.cap = int64(len(pool.conns))
+	pool.cap = int32(pool.Cap)
+	pool.ctx = ctx
 	return nil
 }
 
 func (pool *ConnPool) Handle(ctx context.Context, req *Request) (*Response, error) {
-	// Allow pos to overflow.
-	pos := atomic.AddInt64(&pool.cap, 1)
-
 	// There is no guarantee, that current position does not exceed
-	// cap, use modulo in order to ensure.
-	pos = pos % pool.cap
+	// cap, use modulo in order to ensure this.
+	pos := atomic.AddInt32(&pool.pos, 1)
+	pos = pos % int32(pool.cap)
 
 	// Connection is thread-safe, therefore spawn processing as it is.
+	pool.mu.RLock()
 	conn := pool.conns[pos]
-	return conn.Handle(ctx, req)
+	pool.mu.RUnlock()
+
+	// Attempt to handle the incoming request, and when the connection
+	// was closed for some reason, attempt to restart the connection,
+	// but leave the request unprocessed for the sake of performance.
+	resp, err := conn.Handle(ctx, req)
+	if err != ErrConnClosed {
+		return resp, err
+	}
+
+	// Restart connection, when it's closed, multiple concurrent requests
+	// could attempt to restart the closed connection, but only one will
+	// succeed.
+	pool.mu.Lock()
+	conn = pool.New()
+	err = conn.Serve(pool.ctx)
+	pool.conns[pos] = conn
+	pool.mu.Unlock()
+
+	if err != nil && err != ErrConnStarted {
+		return nil, err
+	}
+	return nil, ErrConnClosed
 }

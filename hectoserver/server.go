@@ -117,10 +117,6 @@ func ReadResponse(r *bufio.Reader) (*Response, error) {
 	}, nil
 }
 
-type ResponseWriter interface {
-	Write(resp *Response) error
-}
-
 type Handler interface {
 	Handle(context.Context, *Request) (*Response, error)
 }
