@@ -16,7 +16,7 @@ type ResolverConfig struct {
 	Name string `hcl:"resolve,label"`
 
 	// Options is a list of additional options to execute the resolver.
-	Options []string `hcl:"options,optional"`
+	Options map[string]string `hcl:"options,optional"`
 
 	Preload bool `hcl:"preload,optional"`
 
@@ -31,6 +31,11 @@ type ResolverConfig struct {
 
 // ServerConfig is a configuration for a single server instance.
 type ServerConfig struct {
+	// Root sets the root directory for resolvers, when specified
+	// server searches the executable in the given path, otherwise
+	// a PATH will be used.
+	Root string `hcl:"root,optional"`
+
 	// Listen defines an IP address and port used to listen to
 	//
 	// Examples:

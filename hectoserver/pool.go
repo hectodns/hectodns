@@ -2,9 +2,10 @@ package hectoserver
 
 import (
 	"context"
-	"log"
 	"sync"
 	"sync/atomic"
+
+	"github.com/rs/zerolog"
 )
 
 type ConnPool struct {
@@ -26,15 +27,19 @@ type ConnPool struct {
 
 func (pool *ConnPool) Serve(ctx context.Context) error {
 	conns := make([]*Conn, pool.Cap)
+	logger := zerolog.Ctx(ctx)
 
 	for i := 0; i < pool.Cap; i++ {
 		conn := pool.New()
+
+		log := logger.With().Str("name", conn.Procname).Int("process", i).Logger()
+		ctx := log.WithContext(ctx)
+
 		if err := conn.Serve(ctx); err != nil {
 			return err
 		}
 
 		conns[i] = conn
-		log.Printf("started resolver %q-%d", conns[i].Procname, i)
 	}
 
 	pool.conns = conns

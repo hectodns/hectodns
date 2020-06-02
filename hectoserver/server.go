@@ -130,16 +130,18 @@ type Server struct {
 	handlers []HandleServer
 }
 
-func NewServer(cc []ResolverConfig) (*Server, error) {
+func NewServer(root string, cc []ResolverConfig) (*Server, error) {
 	srv := Server{
 		handlers: make([]HandleServer, len(cc)),
 	}
+
 	for i, c := range cc {
 		c := c
 		newConn := func() *Conn {
 			return &Conn{
+				Root:            root,
 				Procname:        c.Name,
-				Procopts:        c.Options,
+				Procenv:         c.Options,
 				MaxIdleRequests: c.MaxIdle,
 			}
 		}

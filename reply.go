@@ -13,6 +13,8 @@ import (
 )
 
 func main() {
+	keyfile := os.Getenv("keyfile")
+
 	r := bufio.NewReader(os.Stdin)
 	w := bufio.NewWriter(os.Stdout)
 	buf := bufio.NewReadWriter(r, w)
@@ -48,14 +50,15 @@ func main() {
 		}
 
 		httpresp := &http.Response{
-			StatusCode:    http.StatusOK,
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"X-Keyfile": {keyfile},
+			},
 			ContentLength: int64(len(b)),
 			Body:          ioutil.NopCloser(bytes.NewBuffer(b)),
 		}
 
 		httpresp.Write(buf)
 		buf.Flush()
-
-		panic("XXX")
 	}
 }

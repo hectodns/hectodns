@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog"
 )
 
 // ConnState represents the state of a client connection to a server.
@@ -60,11 +62,16 @@ const (
 )
 
 type Conn struct {
+	Root string
+
 	// Procname is the name of the process to start.
 	Procname string
 
-	// Procopts is a list of process options.
+	// Procopts is a list of process arguments.
 	Procopts []string
+
+	// Procenv is a process environment variables.
+	Procenv map[string]string
 
 	// MaxIdleRequests is the maximum requests waiting for processing,
 	// when stet to zero, no idle requests are allowed.
@@ -75,7 +82,8 @@ type Conn struct {
 	ConnState func(*Conn, ConnState)
 
 	// state is used to keep track of connection state.
-	state ConnState
+	state  ConnState
+	logger *zerolog.Logger
 
 	proc   *os.Process
 	procmu sync.Mutex
@@ -92,16 +100,36 @@ type Conn struct {
 	sendC chan pub
 }
 
+func (conn *Conn) log() *zerolog.Logger {
+	if conn.logger == nil {
+		logger := zerolog.Nop()
+		conn.logger = &logger
+	}
+	return conn.logger
+}
+
 func (conn *Conn) setState(from, to ConnState) (ok bool) {
 	ok = conn.state.transition(from, to)
-	if cb := conn.ConnState; cb != nil && ok {
-		cb(conn, to)
+	if ok {
+		conn.log().Debug().Msgf("transitioning from '%s' to '%s'", from, to)
+		if cb := conn.ConnState; cb != nil {
+			cb(conn, to)
+		}
+	} else {
+		conn.log().Debug().Msgf("failed transition from '%s' to '%s'", from, to)
 	}
 	return
 }
 
 func (conn *Conn) forkexec() (proc *os.Process, r, w *os.File, err error) {
 	var stdin, stdout *os.File
+
+	var env []string
+	if procenv := conn.Procenv; procenv != nil {
+		for k, v := range procenv {
+			env = append(env, k+"="+v)
+		}
+	}
 
 	// Close unnecessary files, ingore errors.
 	defer func() {
@@ -124,8 +152,20 @@ func (conn *Conn) forkexec() (proc *os.Process, r, w *os.File, err error) {
 	}
 
 	name, argv := conn.Procname, conn.Procopts
+
+	// When the root is specified, search the executables for resolvers
+	// exatly in the provided directory, otherwise use PATH.
+	if root := conn.Root; root != "" {
+		root, err = filepath.Abs(root)
+		if err != nil {
+			return
+		}
+		name = filepath.Join(root, name)
+	}
+
 	proc, err = os.StartProcess(name, argv, &os.ProcAttr{
 		Files: []*os.File{stdin, stdout, os.Stderr},
+		Env:   env,
 	})
 
 	return
@@ -142,9 +182,6 @@ var ErrConnStarted = Error{err: "already started"}
 // done, terminate connection gracefully using Shutdown method or use
 // Close to terminate connection immediately.
 func (conn *Conn) Serve(ctx context.Context) (err error) {
-	// Trigger the ConnState callback on the StateNew.
-	conn.setState(StateNew, StateNew)
-
 	defer func() {
 		if err == nil {
 			conn.setState(StateNew, StateStarted)
@@ -161,6 +198,10 @@ func (conn *Conn) Serve(ctx context.Context) (err error) {
 		return ErrConnStarted
 	}
 
+	conn.logger = zerolog.Ctx(ctx)
+	// Trigger the ConnState callback on the StateNew.
+	conn.setState(StateNew, StateNew)
+
 	proc, r, w, err := conn.forkexec()
 	if err != nil {
 		return
@@ -173,6 +214,7 @@ func (conn *Conn) Serve(ctx context.Context) (err error) {
 
 	conn.proc = proc
 	conn.pubmap = make(map[int64]pub, maxidle)
+
 	conn.sendC = make(chan pub, maxidle)
 	conn.stopC = make(chan struct{}, 1)
 

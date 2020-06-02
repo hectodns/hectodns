@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/miekg/dns"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+
 	"github.com/netrack/hectodns/hectoserver"
 )
 
@@ -16,12 +20,15 @@ func main() {
 
 	fmt.Printf("%#v\n", config)
 
-	srv, err := hectoserver.NewServer(config.Servers[0].Resolvers)
+	srv, err := hectoserver.NewServer(config.Servers[0].Root, config.Servers[0].Resolvers)
 	if err != nil {
 		panic(err)
 	}
 
-	if err := srv.Serve(context.Background()); err != nil {
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	ctx := log.Logger.WithContext(context.Background())
+
+	if err := srv.Serve(ctx); err != nil {
 		panic(err)
 	}
 
