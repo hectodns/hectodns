@@ -6,11 +6,11 @@ import (
 	"context"
 	"io"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -124,10 +124,12 @@ type Handler interface {
 type HandleServer interface {
 	Handler
 	Serve(context.Context) error
+	Close() error
 }
 
 type Server struct {
 	handlers []HandleServer
+	logger   *zerolog.Logger
 }
 
 func NewServer(root string, cc []ResolverConfig) (*Server, error) {
@@ -155,16 +157,27 @@ func NewServer(root string, cc []ResolverConfig) (*Server, error) {
 
 		srv.handlers[i] = &ConnPool{Cap: poolCap, New: newConn}
 	}
+
 	return &srv, nil
 }
 
+func (srv *Server) Shutdown() error {
+	for _, h := range srv.handlers {
+		h.Close()
+	}
+	return nil
+}
+
 func (srv *Server) Serve(ctx context.Context) error {
+	srv.logger = zerolog.Ctx(ctx)
+
 	// TODO: reap processes after failure.
-	for _, r := range srv.handlers {
-		if err := r.Serve(ctx); err != nil {
+	for _, h := range srv.handlers {
+		if err := h.Serve(ctx); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -174,18 +187,29 @@ func (srv *Server) ServeDNS(w dns.ResponseWriter, dnsreq *dns.Msg) {
 	var servfail dns.Msg
 	servfail.SetRcode(dnsreq, dns.RcodeServerFailure)
 
-	for i, h := range srv.handlers {
-		log.Println(i)
-		resp, err := h.Handle(context.TODO(), &req)
-		log.Printf("INFO: %d processed %#v", i, resp)
+	log := srv.logger.With().Uint16("id", dnsreq.Id).Logger()
+	log.Debug().Msg("server received request")
+
+	// Bypass the logger though context of the handler.
+	ctx := log.WithContext(context.TODO())
+
+	for no, h := range srv.handlers {
+		log.Debug().Msgf("server passed request to %d resolver", no)
+		resp, err := h.Handle(ctx, &req)
 
 		if err != nil {
-			log.Println("FATAL:", err.Error())
+			log.Debug().Msgf("server error from %d resolver, %s", no, err)
 			w.WriteMsg(&servfail)
 			return
 		}
 
+		log.Debug().
+			Int("status", resp.StatusCode).
+			Int("rcode", resp.Body.Rcode).
+			Msgf("server received reply")
+
 		if resp.StatusCode == http.StatusOK {
+			log.Debug().Msgf("server sending reply")
 			w.WriteMsg(&resp.Body)
 			return
 		}

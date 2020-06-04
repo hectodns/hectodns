@@ -51,9 +51,9 @@ func (c ConnState) String() string {
 }
 
 var connStateText = map[ConnState]string{
-	StateNew:     "StateNew",
-	StateStarted: "StateStarted",
-	StateClosed:  "StateClosed",
+	StateNew:     "new",
+	StateStarted: "started",
+	StateClosed:  "closed",
 }
 
 const (
@@ -100,6 +100,10 @@ type Conn struct {
 	sendC chan pub
 }
 
+func (conn *Conn) String() string {
+	return conn.Procname
+}
+
 func (conn *Conn) log() *zerolog.Logger {
 	if conn.logger == nil {
 		logger := zerolog.Nop()
@@ -111,12 +115,10 @@ func (conn *Conn) log() *zerolog.Logger {
 func (conn *Conn) setState(from, to ConnState) (ok bool) {
 	ok = conn.state.transition(from, to)
 	if ok {
-		conn.log().Debug().Msgf("transitioning from '%s' to '%s'", from, to)
+		conn.log().Debug().Msgf("conn transition from '%s' to '%s'", from, to)
 		if cb := conn.ConnState; cb != nil {
 			cb(conn, to)
 		}
-	} else {
-		conn.log().Debug().Msgf("failed transition from '%s' to '%s'", from, to)
 	}
 	return
 }
@@ -206,6 +208,9 @@ func (conn *Conn) Serve(ctx context.Context) (err error) {
 	if err != nil {
 		return
 	}
+
+	log := conn.logger.With().Int("pid", proc.Pid).Logger()
+	conn.logger = &log
 
 	maxidle := conn.MaxIdleRequests
 	if maxidle <= 0 {
@@ -373,6 +378,8 @@ func (conn *Conn) close(graceful bool) {
 
 	conn.proc.Kill()
 	conn.proc.Wait()
+
+	conn.log().Debug().Msg("process killed")
 
 	// Terminate the goroutines at first, and only then close the
 	// channel for processing requests.

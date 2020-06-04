@@ -32,7 +32,7 @@ func (pool *ConnPool) Serve(ctx context.Context) error {
 	for i := 0; i < pool.Cap; i++ {
 		conn := pool.New()
 
-		log := logger.With().Str("name", conn.Procname).Int("process", i).Logger()
+		log := logger.With().Str("name", conn.Procname).Int("proc", i).Logger()
 		ctx := log.WithContext(ctx)
 
 		if err := conn.Serve(ctx); err != nil {
@@ -42,9 +42,21 @@ func (pool *ConnPool) Serve(ctx context.Context) error {
 		conns[i] = conn
 	}
 
+	logger.Info().Msgf("started %d resolvers in pool", pool.Cap)
+
 	pool.conns = conns
 	pool.cap = int32(pool.Cap)
 	pool.ctx = ctx
+	return nil
+}
+
+func (pool *ConnPool) Close() error {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+
+	for _, c := range pool.conns {
+		c.Close()
+	}
 	return nil
 }
 
