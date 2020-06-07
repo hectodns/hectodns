@@ -93,17 +93,3 @@ func DecodeConfig(filename string) (*Config, error) {
 
 	return &config, nil
 }
-
-func derefInt(v *int, def int) int {
-	if v == nil {
-		return def
-	}
-	return *v
-}
-
-func derefStrings(ss *[]string, def []string) []string {
-	if ss == nil {
-		return def
-	}
-	return *ss
-}

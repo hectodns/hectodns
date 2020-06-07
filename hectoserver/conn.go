@@ -123,8 +123,8 @@ func (conn *Conn) setState(from, to ConnState) (ok bool) {
 	return
 }
 
-func (conn *Conn) forkexec() (proc *os.Process, r, w *os.File, err error) {
-	var stdin, stdout *os.File
+func (conn *Conn) forkexec() (proc *os.Process, r, w, e *os.File, err error) {
+	var stdin, stdout, stderr *os.File
 
 	var env []string
 	if procenv := conn.Procenv; procenv != nil {
@@ -152,6 +152,10 @@ func (conn *Conn) forkexec() (proc *os.Process, r, w *os.File, err error) {
 	if err != nil {
 		return
 	}
+	e, stderr, err = os.Pipe()
+	if err != nil {
+		return
+	}
 
 	name, argv := conn.Procname, conn.Procopts
 
@@ -166,7 +170,7 @@ func (conn *Conn) forkexec() (proc *os.Process, r, w *os.File, err error) {
 	}
 
 	proc, err = os.StartProcess(name, argv, &os.ProcAttr{
-		Files: []*os.File{stdin, stdout, os.Stderr},
+		Files: []*os.File{stdin, stdout, stderr},
 		Env:   env,
 	})
 
@@ -204,7 +208,7 @@ func (conn *Conn) Serve(ctx context.Context) (err error) {
 	// Trigger the ConnState callback on the StateNew.
 	conn.setState(StateNew, StateNew)
 
-	proc, r, w, err := conn.forkexec()
+	proc, r, w, e, err := conn.forkexec()
 	if err != nil {
 		return
 	}
@@ -225,6 +229,7 @@ func (conn *Conn) Serve(ctx context.Context) (err error) {
 
 	go conn.writer(ctx, w)
 	go conn.reader(ctx, r)
+	go conn.erroer(ctx, e)
 
 	return
 }
@@ -268,15 +273,17 @@ func (conn *Conn) writer(ctx context.Context, wr io.WriteCloser) (err error) {
 }
 
 type chanResponse struct {
-	resp *Response
-	err  error
+	ret interface{}
+	err error
 }
 
 // The chanReader is a wrapper around connection reader used to
 // create a channel of Responses by continuosly fetching responses
 // from the connection.
 type chanReader struct {
-	bufr *bufio.Reader
+	// Read is the function used to read the data from the
+	// buffered reader.
+	Read func(*bufio.Reader) chanResponse
 
 	once sync.Once
 	ch   chan chanResponse
@@ -285,12 +292,14 @@ type chanReader struct {
 // read starts and inifinite loop of reading the responses from
 // the connection. When the read call returns an error, a submission
 // channel closes and loop terminates.
-func (r *chanReader) read() {
-	for {
-		resp, err := ReadResponse(r.bufr)
-		r.ch <- chanResponse{resp, err}
+func (r *chanReader) read(rd io.Reader) {
+	bufr := bufio.NewReader(rd)
 
-		if err != nil {
+	for {
+		resp := r.Read(bufr)
+		r.ch <- resp
+
+		if resp.err != nil {
 			close(r.ch)
 			return
 		}
@@ -300,14 +309,14 @@ func (r *chanReader) read() {
 // The start creates a receive channel to deliver responses to clients,
 // spawns a new goroutine to read responses from the reader and send
 // them through the channel.
-func (r *chanReader) start() {
+func (r *chanReader) start(rd io.Reader) {
 	r.ch = make(chan chanResponse, 1)
-	go r.read()
+	go r.read(rd)
 }
 
 // C returns a read-only channel of response plus error.
-func (r *chanReader) C() <-chan chanResponse {
-	r.once.Do(r.start)
+func (r *chanReader) C(rd io.Reader) <-chan chanResponse {
+	r.once.Do(func() { r.start(rd) })
 	return r.ch
 }
 
@@ -327,15 +336,21 @@ func (conn *Conn) reader(ctx context.Context, rd io.ReadCloser) (err error) {
 	//
 	// Closing the passed reader will cause EOF error being written to
 	// the response channel.
-	reader := chanReader{bufr: bufio.NewReader(rd)}
+	reader := chanReader{
+		Read: func(bufr *bufio.Reader) chanResponse {
+			resp, err := ReadResponse(bufr)
+			return chanResponse{resp, err}
+		},
+	}
 
 	for {
 		select {
-		case chanresp := <-reader.C():
-			resp, err := chanresp.resp, chanresp.err
-			if err != nil {
+		case chanresp := <-reader.C(rd):
+			if chanresp.err != nil {
 				return err
 			}
+
+			resp := chanresp.ret.(*Response)
 
 			// Find a channel where to write the response, the request
 			// and response identifiers must match in order to find the
@@ -358,6 +373,36 @@ func (conn *Conn) reader(ctx context.Context, rd io.ReadCloser) (err error) {
 		// Handle cancellations propagated from the Serve call, it's
 		// likely such calls are initialited by the API users, therfore
 		// terminate connections.
+		case <-ctx.Done():
+			return nil
+		case <-conn.stopC:
+			return nil
+		}
+	}
+}
+
+// erroer is a goroutine that reads lines from stderr of the connection
+// and puts them into the log.
+func (conn *Conn) erroer(ctx context.Context, rd io.ReadCloser) (err error) {
+	defer rd.Close()
+
+	defer conn.close(false)
+
+	reader := chanReader{
+		Read: func(bufr *bufio.Reader) chanResponse {
+			s, err := bufr.ReadString('\n')
+			return chanResponse{s, err}
+		},
+	}
+
+	for {
+		select {
+		case chanresp := <-reader.C(rd):
+			if err := chanresp.err; err != nil {
+				return err
+			}
+
+			conn.log().Info().Msg(chanresp.ret.(string))
 		case <-ctx.Done():
 			return nil
 		case <-conn.stopC:
