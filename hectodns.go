@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"sync"
 
 	"github.com/miekg/dns"
 	"github.com/rs/zerolog"
@@ -15,49 +15,114 @@ import (
 	"github.com/netrack/hectodns/hectoserver"
 )
 
-func main() {
+type Proc struct {
+	srvs []*hectoserver.Server
+	lns  []*dns.Server
+}
+
+func NewProc(config *hectoserver.Config) (*Proc, error) {
+
 	var (
-		srv *hectoserver.Server
-		drv *dns.Server
+		srvs []*hectoserver.Server
+		lns  []*dns.Server
 	)
 
+	for _, sconf := range config.Servers {
+		srv, err := hectoserver.NewServer(&sconf)
+		if err != nil {
+			return nil, err
+		}
+
+		drv := &dns.Server{
+			Addr: sconf.Listen, Net: sconf.Proto, Handler: srv,
+		}
+
+		srvs = append(srvs, srv)
+		lns = append(lns, drv)
+	}
+
+	return &Proc{srvs: srvs, lns: lns}, nil
+}
+
+func (p *Proc) Spawn(ctx context.Context) (err error) {
+	log := zerolog.Ctx(ctx)
+
+	for _, s := range p.srvs {
+		if err = s.Serve(ctx); err != nil {
+			return err
+		}
+	}
+
+	// All listeners are blocking, therefore, spawn them in separate
+	// routines, an wait until completion of all listeners.
+	var (
+		wg   sync.WaitGroup
+		errs = make([]error, len(p.lns))
+	)
+
+	for i, ln := range p.lns {
+		wg.Add(1)
+		go func(i int, ln *dns.Server) {
+			log.Info().Msgf("started %q at %s", ln.Net, ln.Addr)
+			errs[i] = ln.ListenAndServe()
+			wg.Done()
+		}(i, ln)
+	}
+
+	wg.Wait()
+
+	// Leave only the first non-nil error.
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Proc) Terminate() error {
+	for _, s := range p.srvs {
+		s.Shutdown()
+	}
+	// There is a bug in implementation of the DNS server, which prevents
+	// it from being terminated from the concurrent goroutine, therefore
+	// close all listeners at the end.
+	for _, ln := range p.lns {
+		ln.Shutdown()
+	}
+	return nil
+}
+
+func main() {
+	var proc *Proc
+
 	termC := make(chan os.Signal, 1)
-	signal.Notify(termC, os.Interrupt)
+	signal.Notify(termC, os.Interrupt, os.Kill)
 
 	go func() {
 		http.ListenAndServe("localhost:6060", nil)
 	}()
 	go func() {
-		<-termC
-		if srv != nil {
-			srv.Shutdown()
-		}
-		if drv != nil {
-			drv.Shutdown()
+		if <-termC; proc != nil {
+			proc.Terminate()
 		}
 	}()
 
-	config, err := hectoserver.DecodeConfig("hectodns.conf")
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Printf("%#v\n", config)
-
-	srv, err = hectoserver.NewServer(config.Servers[0].Root, config.Servers[0].Resolvers)
-	if err != nil {
-		panic(err)
-	}
-
+	// Configure console logger for the program.
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	ctx := log.Logger.WithContext(context.Background())
 
-	if err := srv.Serve(ctx); err != nil {
-		panic(err)
+	config, err := hectoserver.DecodeConfig("hectodns.conf")
+	if err != nil {
+		log.Fatal().Msg(err.Error())
 	}
 
-	drv = &dns.Server{Addr: ":5333", Net: "udp", Handler: srv}
-	if err = drv.ListenAndServe(); err != nil {
-		panic(err)
+	proc, err = NewProc(config)
+	if err != nil {
+		log.Fatal().Msg(err.Error())
+	}
+
+	if err = proc.Spawn(ctx); err != nil {
+		log.Fatal().Msg(err.Error())
 	}
 }

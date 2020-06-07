@@ -132,25 +132,25 @@ type Server struct {
 	logger   *zerolog.Logger
 }
 
-func NewServer(root string, cc []ResolverConfig) (*Server, error) {
+func NewServer(config *ServerConfig) (*Server, error) {
 	srv := Server{
-		handlers: make([]HandleServer, len(cc)),
+		handlers: make([]HandleServer, len(config.Resolvers)),
 	}
 
-	for i, c := range cc {
-		c := c
+	for i, r := range config.Resolvers {
+		r := r
 		newConn := func() *Conn {
 			return &Conn{
-				Root:            root,
-				Procname:        c.Name,
-				Procenv:         c.Options,
-				MaxIdleRequests: c.MaxIdle,
+				Root:            config.Root,
+				Procname:        r.Name,
+				Procenv:         r.Options,
+				MaxIdleRequests: r.MaxIdle,
 			}
 		}
 
 		// Ensure that one process starts when the configured number
 		// of processes is not defined. (it's either 0 or not set).
-		poolCap := c.Processes
+		poolCap := r.Processes
 		if poolCap < 1 {
 			poolCap = 1
 		}

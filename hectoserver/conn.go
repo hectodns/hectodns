@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -395,6 +396,8 @@ func (conn *Conn) erroer(ctx context.Context, rd io.ReadCloser) (err error) {
 		},
 	}
 
+	log := conn.log().With().Bool("captured", true).Logger()
+
 	for {
 		select {
 		case chanresp := <-reader.C(rd):
@@ -402,7 +405,8 @@ func (conn *Conn) erroer(ctx context.Context, rd io.ReadCloser) (err error) {
 				return err
 			}
 
-			conn.log().Info().Msg(chanresp.ret.(string))
+			text := strings.TrimRight(chanresp.ret.(string), "\n")
+			log.Info().Msg(text)
 		case <-ctx.Done():
 			return nil
 		case <-conn.stopC:

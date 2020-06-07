@@ -49,8 +49,8 @@ type ServerConfig struct {
 	//
 	// Examples:
 	//
-	// 	proto = "dns"
-	//	proto = "http"
+	// 	proto = "udp"
+	//	proto = "tcp"
 	Proto string `hcl:"proto,attr"`
 
 	// Timeout is an optional maximum time for processing each request
