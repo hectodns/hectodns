@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/spf13/cobra"
 
 	"github.com/netrack/hectodns/hectoserver"
 )
@@ -21,7 +23,6 @@ type Proc struct {
 }
 
 func NewProc(config *hectoserver.Config) (*Proc, error) {
-
 	var (
 		srvs []*hectoserver.Server
 		lns  []*dns.Server
@@ -94,35 +95,54 @@ func (p *Proc) Terminate() error {
 }
 
 func main() {
-	var proc *Proc
-
-	termC := make(chan os.Signal, 1)
-	signal.Notify(termC, os.Interrupt, os.Kill)
-
-	go func() {
-		http.ListenAndServe("localhost:6060", nil)
-	}()
-	go func() {
-		if <-termC; proc != nil {
-			proc.Terminate()
-		}
-	}()
-
 	// Configure console logger for the program.
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	ctx := log.Logger.WithContext(context.Background())
 
-	config, err := hectoserver.DecodeConfig("hectodns.conf")
-	if err != nil {
-		log.Fatal().Msg(err.Error())
+	var opts struct {
+		configFile string
 	}
 
-	proc, err = NewProc(config)
-	if err != nil {
-		log.Fatal().Msg(err.Error())
+	run := func(cmd *cobra.Command, args []string) {
+		var proc *Proc
+
+		termC := make(chan os.Signal, 1)
+		signal.Notify(termC, os.Interrupt, os.Kill)
+
+		go func() {
+			http.ListenAndServe("localhost:6060", nil)
+		}()
+		go func() {
+			if <-termC; proc != nil {
+				proc.Terminate()
+			}
+		}()
+
+		config, err := hectoserver.DecodeConfig(opts.configFile)
+		if err != nil {
+			log.Fatal().Msg(err.Error())
+		}
+
+		proc, err = NewProc(config)
+		if err != nil {
+			log.Fatal().Msg(err.Error())
+		}
+
+		if err = proc.Spawn(ctx); err != nil {
+			log.Fatal().Msg(err.Error())
+		}
 	}
 
-	if err = proc.Spawn(ctx); err != nil {
-		log.Fatal().Msg(err.Error())
+	cmd := cobra.Command{
+		Use:   "hectodns",
+		Short: "hectodns - a command to launch Hecto DNS server",
+		Run:   run,
+	}
+
+	cmd.Flags().StringVarP(&opts.configFile, "config-file", "c", "", "hectodns-specific configuration file")
+	cmd.MarkFlagRequired("config-file")
+
+	if err := cmd.Execute(); err != nil {
+		fmt.Println(err)
 	}
 }
