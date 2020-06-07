@@ -127,7 +127,7 @@ func (conn *Conn) setState(from, to ConnState) (ok bool) {
 func (conn *Conn) forkexec() (proc *os.Process, r, w, e *os.File, err error) {
 	var stdin, stdout, stderr *os.File
 
-	var env []string
+	env := os.Environ()
 	if procenv := conn.Procenv; procenv != nil {
 		for k, v := range procenv {
 			env = append(env, k+"="+v)
