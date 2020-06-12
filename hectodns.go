@@ -14,7 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 
-	"github.com/netrack/hectodns/hectoserver"
+	"github.com/hectodns/hectodns/hectoserver"
 )
 
 type Proc struct {

@@ -7,7 +7,6 @@ import (
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pkg/errors"
-	//"github.com/netrack/hectodns/nilptr"
 )
 
 // ResolverConfig is a configuration of a single resolver.

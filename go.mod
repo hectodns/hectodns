@@ -1,4 +1,4 @@
-module github.com/netrack/hectodns
+module github.com/hectodns/hectodns
 
 go 1.12
 
