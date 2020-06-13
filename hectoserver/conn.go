@@ -482,6 +482,8 @@ func (conn *Conn) Handle(ctx context.Context, req *Request) (*Response, error) {
 		// Decrement number of unprocessed requests.
 		atomic.AddInt32(&conn.pubs, -1)
 		return resp, nil
+	case <-conn.stopC:
+		return nil, ErrConnClosed
 	case <-ctx.Done():
 		return nil, ErrTimeout
 	}
