@@ -3,6 +3,7 @@ package hectoserver
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -127,11 +128,9 @@ func (conn *Conn) setState(from, to ConnState) (ok bool) {
 func (conn *Conn) forkexec() (proc *os.Process, r, w, e *os.File, err error) {
 	var stdin, stdout, stderr *os.File
 
-	env := os.Environ()
-	if procenv := conn.Procenv; procenv != nil {
-		for k, v := range procenv {
-			env = append(env, k+"="+v)
-		}
+	b, err := json.Marshal(conn.Procenv)
+	if err != nil {
+		return
 	}
 
 	// Close unnecessary files, ingore errors.
@@ -172,7 +171,7 @@ func (conn *Conn) forkexec() (proc *os.Process, r, w, e *os.File, err error) {
 
 	proc, err = os.StartProcess(name, argv, &os.ProcAttr{
 		Files: []*os.File{stdin, stdout, stderr},
-		Env:   env,
+		Env:   append(os.Environ(), "hectodns.options="+string(b)),
 	})
 
 	return
