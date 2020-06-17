@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"io"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 )
 
@@ -39,14 +42,16 @@ type Request struct {
 	// ID is a unique identifier of the request.
 	ID int64
 
+	Header http.Header
+
 	Body dns.Msg
 
 	// At is a request submission timestamp.
 	At time.Time
 }
 
-func NewRequest(dnsreq dns.Msg) Request {
-	return Request{
+func NewRequest(dnsreq dns.Msg) *Request {
+	return &Request{
 		ID:   int64(dnsreq.Id),
 		Body: dnsreq,
 		At:   time.Now(),
@@ -181,26 +186,25 @@ func (srv *Server) Serve(ctx context.Context) error {
 	return nil
 }
 
-func (srv *Server) ServeDNS(w dns.ResponseWriter, dnsreq *dns.Msg) {
-	req := NewRequest(*dnsreq)
-
-	var servfail dns.Msg
-	servfail.SetRcode(dnsreq, dns.RcodeServerFailure)
-
-	log := srv.logger.With().Uint16("id", dnsreq.Id).Logger()
+// Handle implements Handler interface. Method sequentially executes
+// handlers until the successful response is received.
+//
+// Headers from previous response are copied to the next request, so
+// the handlers could influence behaviour of next handlers.
+func (srv *Server) Handle(ctx context.Context, req *Request) (*Response, error) {
+	log := srv.logger.With().Uint16("id", req.Body.Id).Logger()
 	log.Debug().Msg("server received request")
 
 	// Bypass the logger though context of the handler.
-	ctx := log.WithContext(context.TODO())
+	ctx = log.WithContext(ctx)
 
 	for no, h := range srv.handlers {
 		log.Debug().Msgf("server passed request to %d resolver", no)
-		resp, err := h.Handle(ctx, &req)
+		resp, err := h.Handle(ctx, req)
 
 		if err != nil {
 			log.Debug().Msgf("server error from %d resolver, %s", no, err)
-			w.WriteMsg(&servfail)
-			return
+			return nil, err
 		}
 
 		log.Debug().
@@ -210,10 +214,70 @@ func (srv *Server) ServeDNS(w dns.ResponseWriter, dnsreq *dns.Msg) {
 
 		if resp.StatusCode == http.StatusOK {
 			log.Debug().Msgf("server sending reply")
-			w.WriteMsg(&resp.Body)
-			return
+			return resp, nil
 		}
+
+		// Bypass headers to the next handlers, so the handlers could
+		// exchange intermediate information.
+		req.Header = resp.Header
+	}
+
+	return nil, errors.New("no handlers left")
+}
+
+func (srv *Server) ServeDNS(w dns.ResponseWriter, dnsreq *dns.Msg) {
+	var servfail dns.Msg
+	servfail.SetRcode(dnsreq, dns.RcodeServerFailure)
+
+	resp, err := srv.Handle(context.Background(), NewRequest(*dnsreq))
+	if err == nil {
+		w.WriteMsg(&resp.Body)
+		return
 	}
 
 	w.WriteMsg(&servfail)
+}
+
+func (srv *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	log := srv.logger
+	ctx := log.WithContext(r.Context())
+
+	switch r.Method {
+	case http.MethodGet:
+		query := r.URL.Query().Get("dns")
+		if query == "" {
+			rw.WriteHeader(http.StatusBadRequest)
+			http.Error(rw, "missing 'dns' query in request", http.StatusBadRequest)
+			return
+		}
+
+		b64, err := base64.RawURLEncoding.DecodeString(query)
+		if err != nil {
+			http.Error(rw, "", http.StatusBadRequest)
+			return
+		}
+
+		var dnsreq dns.Msg
+		err = dnsreq.Unpack(b64)
+		if err != nil {
+			http.Error(rw, "broken 'dns' query", http.StatusBadRequest)
+			return
+		}
+
+		resp, err := srv.Handle(ctx, NewRequest(dnsreq))
+		if err != nil {
+			http.Error(rw, "no response", http.StatusInternalServerError)
+			return
+		}
+
+		buf, _ := resp.Body.Pack()
+
+		rw.Header().Set("Content-Type", "application/dns-message")
+		rw.Header().Set("Content-Length", strconv.Itoa(len(buf)))
+
+		rw.WriteHeader(http.StatusOK)
+		rw.Write(buf)
+	default:
+		http.Error(rw, "", http.StatusMethodNotAllowed)
+	}
 }
