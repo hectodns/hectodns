@@ -381,6 +381,13 @@ func (conn *Conn) reader(ctx context.Context, rd io.ReadCloser) (err error) {
 	}
 }
 
+const (
+	levelDebug = "d"
+	levelInfo  = "i"
+	levelWarn  = "w"
+	levelError = "e"
+)
+
 // erroer is a goroutine that reads lines from stderr of the connection
 // and puts them into the log.
 func (conn *Conn) erroer(ctx context.Context, rd io.ReadCloser) (err error) {
@@ -405,7 +412,21 @@ func (conn *Conn) erroer(ctx context.Context, rd io.ReadCloser) (err error) {
 			}
 
 			text := strings.TrimRight(chanresp.ret.(string), "\n")
-			log.Info().Msg(text)
+			parts := strings.SplitN(text, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+
+			switch level, text := parts[0], parts[1]; level {
+			case levelDebug:
+				log.Debug().Msg(text)
+			case levelInfo:
+				log.Info().Msg(text)
+			case levelWarn:
+				log.Warn().Msg(text)
+			case levelError:
+				log.Error().Msg(text)
+			}
 		case <-ctx.Done():
 			return nil
 		case <-conn.stopC:
