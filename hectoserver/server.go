@@ -229,6 +229,9 @@ func (srv *Server) ServeDNS(w dns.ResponseWriter, dnsreq *dns.Msg) {
 	var servfail dns.Msg
 	servfail.SetRcode(dnsreq, dns.RcodeServerFailure)
 
+	b, _ := dnsreq.Pack()
+	srv.logger.Debug().Msgf("dns=%s", base64.RawURLEncoding.EncodeToString(b))
+
 	resp, err := srv.Handle(context.Background(), NewRequest(*dnsreq))
 	if err == nil {
 		w.WriteMsg(&resp.Body)

@@ -18,14 +18,16 @@ import (
 )
 
 type Proc struct {
-	srvs []*hectoserver.Server
-	lns  []*dns.Server
+	srvs          []*hectoserver.Server
+	dnsListeners  []*dns.Server
+	httpListeners []*http.Server
 }
 
 func NewProc(config *hectoserver.Config) (*Proc, error) {
 	var (
-		srvs []*hectoserver.Server
-		lns  []*dns.Server
+		srvs          []*hectoserver.Server
+		dnsListeners  []*dns.Server
+		httpListeners []*http.Server
 	)
 
 	for _, sconf := range config.Servers {
@@ -34,15 +36,24 @@ func NewProc(config *hectoserver.Config) (*Proc, error) {
 			return nil, err
 		}
 
-		drv := &dns.Server{
+		dnsServer := &dns.Server{
 			Addr: sconf.Listen, Net: sconf.Proto, Handler: srv,
 		}
 
+		httpServer := &http.Server{
+			Addr: ":8080", Handler: srv,
+		}
+
 		srvs = append(srvs, srv)
-		lns = append(lns, drv)
+		dnsListeners = append(dnsListeners, dnsServer)
+		httpListeners = append(httpListeners, httpServer)
 	}
 
-	return &Proc{srvs: srvs, lns: lns}, nil
+	return &Proc{
+		srvs:          srvs,
+		dnsListeners:  dnsListeners,
+		httpListeners: httpListeners,
+	}, nil
 }
 
 func (p *Proc) Spawn(ctx context.Context) (err error) {
@@ -58,13 +69,22 @@ func (p *Proc) Spawn(ctx context.Context) (err error) {
 	// routines, an wait until completion of all listeners.
 	var (
 		wg   sync.WaitGroup
-		errs = make([]error, len(p.lns))
+		errs = make([]error, len(p.dnsListeners))
 	)
 
-	for i, ln := range p.lns {
+	for i, ln := range p.dnsListeners {
 		wg.Add(1)
 		go func(i int, ln *dns.Server) {
-			log.Info().Msgf("started %q at %s", ln.Net, ln.Addr)
+			log.Info().Msgf("started (%s) at %s", ln.Net, ln.Addr)
+			errs[i] = ln.ListenAndServe()
+			wg.Done()
+		}(i, ln)
+	}
+
+	for i, ln := range p.httpListeners {
+		wg.Add(1)
+		go func(i int, ln *http.Server) {
+			log.Info().Msgf("started (http) at %s", ln.Addr)
 			errs[i] = ln.ListenAndServe()
 			wg.Done()
 		}(i, ln)
@@ -88,8 +108,11 @@ func (p *Proc) Terminate() error {
 	// There is a bug in implementation of the DNS server, which prevents
 	// it from being terminated from the concurrent goroutine, therefore
 	// close all listeners at the end.
-	for _, ln := range p.lns {
+	for _, ln := range p.dnsListeners {
 		ln.Shutdown()
+	}
+	for _, ln := range p.httpListeners {
+		ln.Shutdown(context.TODO())
 	}
 	return nil
 }
