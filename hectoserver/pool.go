@@ -2,11 +2,71 @@ package hectoserver
 
 import (
 	"context"
+	"io"
 	"sync"
 	"sync/atomic"
 
 	"github.com/rs/zerolog"
 )
+
+// ShutdownFunc tells a handler to terminate its work. ShutdownFunc
+// waits for the work to stop. A ShutdownFunc may be called by multiple
+// goroutines simultaneously.
+type ShutdownFunc func() error
+
+// ShutdownAll executes all passed ShutdownFunc sequentially.
+func ShutdownAll(fn ...ShutdownFunc) (err error) {
+	for _, f := range fn {
+		if f != nil {
+			err = checkerr(err, f())
+		}
+	}
+	return
+}
+
+// CreateAndServe creates new connections to the specifies resolvers,
+// and returns handler instance to bypass them a single DNS request.
+//
+// Method returns ShutdownFunc to control lifetime of the handlers,
+// after calling it, handler will return an error on attempt to process
+// a request.
+func CreateAndServe(ctx context.Context, config *ServerConfig) (Handler, ShutdownFunc, error) {
+	handlers := make([]Handler, len(config.Resolvers))
+	closers := make([]io.Closer, len(config.Resolvers))
+
+	// Return a function to control the lifetime of the handlers.
+	shutdownFunc := func() error { return closeall(closers...) }
+
+	for i, r := range config.Resolvers {
+		r := r
+		newConn := func() *Conn {
+			return &Conn{
+				Root:            config.Root,
+				Procname:        r.Name,
+				Procenv:         r.Options,
+				MaxIdleRequests: r.MaxIdle,
+			}
+		}
+
+		// Ensure that one process starts when the configured number
+		// of processes is not defined. (it's either 0 or not set).
+		poolCap := r.Processes
+		if poolCap < 1 {
+			poolCap = 1
+		}
+
+		pool := &ConnPool{Cap: poolCap, New: newConn}
+		err := pool.Serve(ctx)
+		if err != nil {
+			return nil, shutdownFunc, err
+		}
+
+		handlers[i] = pool
+		closers[i] = pool
+	}
+
+	return MultiHandler(handlers...), shutdownFunc, nil
+}
 
 type ConnPool struct {
 	// Cap is the capacity of the connection pool, or the number of

@@ -18,52 +18,55 @@ import (
 )
 
 type Proc struct {
-	srvs          []*hectoserver.Server
+	ctx      context.Context
+	shutdown hectoserver.ShutdownFunc
+
 	dnsListeners  []*dns.Server
 	httpListeners []*http.Server
 }
 
 func NewProc(config *hectoserver.Config) (*Proc, error) {
-	var (
-		srvs          []*hectoserver.Server
-		dnsListeners  []*dns.Server
-		httpListeners []*http.Server
-	)
+	var shutdowners []hectoserver.ShutdownFunc
+
+	// Configure console logger for the program.
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	ctx := log.Logger.WithContext(context.Background())
+
+	proc := &Proc{
+		ctx: ctx,
+		shutdown: hectoserver.ShutdownFunc(func() error {
+			return hectoserver.ShutdownAll(shutdowners...)
+		}),
+	}
 
 	for _, sconf := range config.Servers {
-		srv, err := hectoserver.NewServer(&sconf)
+		h, shutdownFunc, err := hectoserver.CreateAndServe(ctx, &sconf)
+		shutdowners = append(shutdowners, shutdownFunc)
+
 		if err != nil {
-			return nil, err
+			return proc, err
 		}
 
 		dnsServer := &dns.Server{
-			Addr: sconf.Listen, Net: sconf.Proto, Handler: srv,
+			Addr:    sconf.Listen,
+			Net:     sconf.Proto,
+			Handler: hectoserver.ServeDNS(h),
 		}
 
 		httpServer := &http.Server{
-			Addr: ":8080", Handler: srv,
+			Addr:    ":8080",
+			Handler: hectoserver.ServeHTTP(h),
 		}
 
-		srvs = append(srvs, srv)
-		dnsListeners = append(dnsListeners, dnsServer)
-		httpListeners = append(httpListeners, httpServer)
+		proc.dnsListeners = append(proc.dnsListeners, dnsServer)
+		proc.httpListeners = append(proc.httpListeners, httpServer)
 	}
 
-	return &Proc{
-		srvs:          srvs,
-		dnsListeners:  dnsListeners,
-		httpListeners: httpListeners,
-	}, nil
+	return proc, nil
 }
 
-func (p *Proc) Spawn(ctx context.Context) (err error) {
-	log := zerolog.Ctx(ctx)
-
-	for _, s := range p.srvs {
-		if err = s.Serve(ctx); err != nil {
-			return err
-		}
-	}
+func (p *Proc) Spawn() (err error) {
+	log := zerolog.Ctx(p.ctx)
 
 	// All listeners are blocking, therefore, spawn them in separate
 	// routines, an wait until completion of all listeners.
@@ -94,7 +97,7 @@ func (p *Proc) Spawn(ctx context.Context) (err error) {
 
 	// Leave only the first non-nil error.
 	for _, err := range errs {
-		if err != nil {
+		if err != nil && err != http.ErrServerClosed {
 			return err
 		}
 	}
@@ -102,12 +105,8 @@ func (p *Proc) Spawn(ctx context.Context) (err error) {
 }
 
 func (p *Proc) Terminate() error {
-	for _, s := range p.srvs {
-		s.Shutdown()
-	}
-	// There is a bug in implementation of the DNS server, which prevents
-	// it from being terminated from the concurrent goroutine, therefore
-	// close all listeners at the end.
+	defer p.shutdown()
+
 	for _, ln := range p.dnsListeners {
 		ln.Shutdown()
 	}
@@ -118,10 +117,6 @@ func (p *Proc) Terminate() error {
 }
 
 func main() {
-	// Configure console logger for the program.
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
-	ctx := log.Logger.WithContext(context.Background())
-
 	var opts struct {
 		configFile string
 	}
@@ -151,7 +146,9 @@ func main() {
 			log.Fatal().Msg(err.Error())
 		}
 
-		if err = proc.Spawn(ctx); err != nil {
+		defer proc.Terminate()
+
+		if err = proc.Spawn(); err != nil {
 			log.Fatal().Msg(err.Error())
 		}
 	}
