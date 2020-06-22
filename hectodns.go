@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"sync"
 
-	"github.com/miekg/dns"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
@@ -21,8 +20,8 @@ type Proc struct {
 	ctx      context.Context
 	shutdown hectoserver.ShutdownFunc
 
-	dnsListeners  []*dns.Server
-	httpListeners []*http.Server
+	configs   []hectoserver.ServerConfig
+	listeners []hectoserver.Listener
 }
 
 func NewProc(config *hectoserver.Config) (*Proc, error) {
@@ -39,27 +38,20 @@ func NewProc(config *hectoserver.Config) (*Proc, error) {
 		}),
 	}
 
-	for _, sconf := range config.Servers {
-		h, shutdownFunc, err := hectoserver.CreateAndServe(ctx, &sconf)
+	for _, conf := range config.Servers {
+		h, shutdownFunc, err := hectoserver.CreateAndServe(ctx, &conf)
 		shutdowners = append(shutdowners, shutdownFunc)
-
 		if err != nil {
 			return proc, err
 		}
 
-		dnsServer := &dns.Server{
-			Addr:    sconf.Listen,
-			Net:     sconf.Proto,
-			Handler: hectoserver.ServeDNS(h),
+		ln, err := hectoserver.Listen(conf.Proto, conf.Listen, h)
+		if err != nil {
+			return proc, err
 		}
 
-		httpServer := &http.Server{
-			Addr:    ":8080",
-			Handler: hectoserver.ServeHTTP(h),
-		}
-
-		proc.dnsListeners = append(proc.dnsListeners, dnsServer)
-		proc.httpListeners = append(proc.httpListeners, httpServer)
+		proc.configs = append(proc.configs, conf)
+		proc.listeners = append(proc.listeners, ln)
 	}
 
 	return proc, nil
@@ -72,22 +64,13 @@ func (p *Proc) Spawn() (err error) {
 	// routines, an wait until completion of all listeners.
 	var (
 		wg   sync.WaitGroup
-		errs = make([]error, len(p.dnsListeners))
+		errs = make([]error, len(p.listeners))
 	)
 
-	for i, ln := range p.dnsListeners {
+	for i, ln := range p.listeners {
 		wg.Add(1)
-		go func(i int, ln *dns.Server) {
-			log.Info().Msgf("started (%s) at %s", ln.Net, ln.Addr)
-			errs[i] = ln.ListenAndServe()
-			wg.Done()
-		}(i, ln)
-	}
-
-	for i, ln := range p.httpListeners {
-		wg.Add(1)
-		go func(i int, ln *http.Server) {
-			log.Info().Msgf("started (http) at %s", ln.Addr)
+		go func(i int, ln hectoserver.Listener) {
+			log.Info().Msgf("started (%s) at %s", p.configs[i].Proto, p.configs[i].Listen)
 			errs[i] = ln.ListenAndServe()
 			wg.Done()
 		}(i, ln)
@@ -107,10 +90,7 @@ func (p *Proc) Spawn() (err error) {
 func (p *Proc) Terminate() error {
 	defer p.shutdown()
 
-	for _, ln := range p.dnsListeners {
-		ln.Shutdown()
-	}
-	for _, ln := range p.httpListeners {
+	for _, ln := range p.listeners {
 		ln.Shutdown(context.TODO())
 	}
 	return nil
