@@ -10,6 +10,33 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+var (
+	ErrProtoUnknown = Error{err: "unknown protocol"}
+)
+
+// Server describes an interface to start and terminate a server.
+type Listener interface {
+	ListenAndServe() error
+	Shutdown(context.Context) error
+}
+
+func Listen(proto, addr string, h Handler) (Listener, error) {
+	switch proto {
+	case "udp":
+		return ListenUDP(addr, h), nil
+	case "tcp":
+		return ListenTCP(addr, h), nil
+	case "http":
+		return ListenHTTP(addr, h), nil
+	default:
+		return nil, ErrProtoUnknown
+	}
+}
+
+func ListenHTTP(addr string, h Handler) Listener {
+	return &http.Server{Addr: addr, Handler: ServeHTTP(h)}
+}
+
 func ServeHTTP(h Handler) http.Handler {
 	return &httpHandler{h}
 }
@@ -61,8 +88,28 @@ func (h *httpHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func ListenUDP(addr string, h Handler) Listener {
+	return &dnsServer{
+		Server: dns.Server{Addr: addr, Net: "udp", Handler: ServeDNS(h)},
+	}
+}
+
+func ListenTCP(addr string, h Handler) Listener {
+	return &dnsServer{
+		Server: dns.Server{Addr: addr, Net: "tcp", Handler: ServeDNS(h)},
+	}
+}
+
 func ServeDNS(h Handler) dns.Handler {
 	return &dnsHandler{h}
+}
+
+type dnsServer struct {
+	dns.Server
+}
+
+func (s *dnsServer) Shutdown(ctx context.Context) error {
+	return s.Server.ShutdownContext(ctx)
 }
 
 type dnsHandler struct {

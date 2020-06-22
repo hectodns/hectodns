@@ -12,7 +12,7 @@ import (
 // ResolverConfig is a configuration of a single resolver.
 type ResolverConfig struct {
 	// Name of the command used to execute the resolver.
-	Name string `hcl:"resolve,label"`
+	Name string `hcl:"resolver,label"`
 
 	// Options is a list of additional options to execute the resolver.
 	Options map[string]string `hcl:"options,optional"`
@@ -60,7 +60,7 @@ type ServerConfig struct {
 	// polled in order to retrieve a response on the processing request.
 	//
 	// Each server starts resolvers isolated from other servers.
-	Resolvers []ResolverConfig `hcl:"resolve,block"`
+	Resolvers []ResolverConfig `hcl:"resolver,block"`
 }
 
 // Config is a structure that holds configurations for the whole DNS server.
