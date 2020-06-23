@@ -169,6 +169,10 @@ func (conn *Conn) forkexec() (proc *os.Process, r, w, e *os.File, err error) {
 		name = filepath.Join(root, name)
 	}
 
+	// Ensure the first argument is the name of the program. Go library
+	// does not put it for us, we have to do int manually.
+	argv = append([]string{name}, conn.Procopts...)
+
 	proc, err = os.StartProcess(name, argv, &os.ProcAttr{
 		Files: []*os.File{stdin, stdout, stderr},
 		Env:   append(os.Environ(), "hectodns.options="+string(b)),
@@ -355,6 +359,7 @@ func (conn *Conn) erroer(ctx context.Context, rd io.ReadCloser) (err error) {
 	}
 
 	log := conn.log().With().Bool("captured", true).Logger()
+	elog := log.With().Bool("malformed", true).Logger()
 
 	for {
 		select {
@@ -366,6 +371,7 @@ func (conn *Conn) erroer(ctx context.Context, rd io.ReadCloser) (err error) {
 			text := strings.TrimRight(chanresp.ret.(string), "\n")
 			parts := strings.SplitN(text, ":", 2)
 			if len(parts) != 2 {
+				elog.Warn().Msg(text)
 				continue
 			}
 
@@ -378,6 +384,8 @@ func (conn *Conn) erroer(ctx context.Context, rd io.ReadCloser) (err error) {
 				log.Warn().Msg(text)
 			case levelError:
 				log.Error().Msg(text)
+			default:
+				elog.Warn().Msg(text)
 			}
 		case <-ctx.Done():
 			return nil
