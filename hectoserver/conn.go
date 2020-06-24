@@ -375,15 +375,15 @@ func (conn *Conn) erroer(ctx context.Context, rd io.ReadCloser) (err error) {
 				continue
 			}
 
-			switch level, text := parts[0], parts[1]; level {
+			switch level, msg := parts[0], parts[1]; level {
 			case levelDebug:
-				log.Debug().Msg(text)
+				log.Debug().Msg(msg)
 			case levelInfo:
-				log.Info().Msg(text)
+				log.Info().Msg(msg)
 			case levelWarn:
-				log.Warn().Msg(text)
+				log.Warn().Msg(msg)
 			case levelError:
-				log.Error().Msg(text)
+				log.Error().Msg(msg)
 			default:
 				elog.Warn().Msg(text)
 			}
