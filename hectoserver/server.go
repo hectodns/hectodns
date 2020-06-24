@@ -3,6 +3,7 @@ package hectoserver
 import (
 	"context"
 	"encoding/base64"
+	"net"
 	"net/http"
 	"strconv"
 
@@ -45,8 +46,14 @@ type httpHandler struct {
 	Handler
 }
 
+type anyAddr string
+
+func (a anyAddr) Network() string { return "any" }
+func (a anyAddr) String() string  { return string(a) }
+
 func (h *httpHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	ctx := log.Logger.WithContext(req.Context())
+	laddr, _ := req.Context().Value(http.LocalAddrContextKey).(net.Addr)
 
 	switch req.Method {
 	case http.MethodGet:
@@ -70,7 +77,8 @@ func (h *httpHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		resp, err := h.Handle(ctx, NewRequest(r))
+		fwreq := NewRequest(r).Forward(laddr, anyAddr(req.RemoteAddr))
+		resp, err := h.Handle(ctx, fwreq)
 		if err != nil {
 			http.Error(rw, "no response", http.StatusInternalServerError)
 			return
@@ -122,7 +130,8 @@ func (h *dnsHandler) ServeDNS(rw dns.ResponseWriter, r *dns.Msg) {
 
 	ctx := log.Logger.WithContext(context.Background())
 
-	resp, err := h.Handle(ctx, NewRequest(*r))
+	fwreq := NewRequest(*r).Forward(rw.LocalAddr(), rw.RemoteAddr())
+	resp, err := h.Handle(ctx, fwreq)
 	if err == nil {
 		rw.WriteMsg(&resp.Body)
 		return

@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"time"
 
@@ -54,6 +56,20 @@ func NewRequest(dnsreq dns.Msg) *Request {
 		Body: dnsreq,
 		At:   time.Now(),
 	}
+}
+
+// Forward sets the "Forwarded" header defined in RFC 7239, section 4. This
+// is used to pass local and remote address to the processing plugins.
+func (r *Request) Forward(laddr, raddr net.Addr) *Request {
+	// Specify that forwarding entity is not known.
+	if laddr == nil {
+		laddr = anyAddr("unknown")
+	}
+	if raddr == nil {
+		raddr = anyAddr("unknown")
+	}
+	r.Header.Set("Forwarded", fmt.Sprintf("by=%q;for=%q", laddr, raddr))
+	return r
 }
 
 func (r *Request) Write(w io.Writer) error {
