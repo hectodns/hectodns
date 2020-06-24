@@ -52,15 +52,20 @@ type Request struct {
 
 func NewRequest(dnsreq dns.Msg) *Request {
 	return &Request{
-		ID:   int64(dnsreq.Id),
-		Body: dnsreq,
-		At:   time.Now(),
+		ID:     int64(dnsreq.Id),
+		Header: make(http.Header),
+		Body:   dnsreq,
+		At:     time.Now(),
 	}
 }
 
 // Forward sets the "Forwarded" header defined in RFC 7239, section 4. This
 // is used to pass local and remote address to the processing plugins.
 func (r *Request) Forward(laddr, raddr net.Addr) *Request {
+	if r.Header == nil {
+		r.Header = make(http.Header)
+	}
+
 	// Specify that forwarding entity is not known.
 	if laddr == nil {
 		laddr = anyAddr("unknown")
@@ -68,7 +73,7 @@ func (r *Request) Forward(laddr, raddr net.Addr) *Request {
 	if raddr == nil {
 		raddr = anyAddr("unknown")
 	}
-	r.Header.Set("Forwarded", fmt.Sprintf("by=%q;for=%q", laddr, raddr))
+	r.Header.Set("forwarded", fmt.Sprintf("by=%q;for=%q", laddr, raddr))
 	return r
 }
 
@@ -84,6 +89,15 @@ func (r *Request) Write(w io.Writer) error {
 	}
 
 	httpreq.Header.Set("user-agent", httpUserAgent)
+
+	// Override request headers with user-defined headers,
+	// so the plugins could be access to this information.
+	if header := r.Header; header != nil {
+		for key, value := range header {
+			httpreq.Header[key] = value
+		}
+	}
+
 	return httpreq.Write(w)
 }
 
