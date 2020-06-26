@@ -38,6 +38,24 @@ var (
 	errContentLength = Error{err: "content length is not known"}
 )
 
+func readDNS(r io.Reader, rlen int64) (m *dns.Msg, err error) {
+	// ContentLength is unknown, DNS message can't be extracted.
+	if rlen < 0 {
+		return nil, errContentLength
+	}
+
+	b, err := ioutil.ReadAll(io.LimitReader(r, rlen))
+	if err != nil {
+		return nil, err
+	}
+
+	m = new(dns.Msg)
+	if err = m.Unpack(b); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 type Request struct {
 	// ID is a unique identifier of the request.
 	ID int64
@@ -57,6 +75,27 @@ func NewRequest(dnsreq dns.Msg) *Request {
 		Body:   dnsreq,
 		At:     time.Now(),
 	}
+}
+
+// ReadRequest reads and parses an incoming request from r.
+//
+// ReadRequst is a low-level function and should only be used for specialized
+// applications; most code should use Listener to read request and handle
+// them via Handler interface.
+func ReadRequest(r *bufio.Reader) (*Request, error) {
+	httpreq, err := http.ReadRequest(r)
+	if err != nil {
+		return nil, err
+	}
+
+	defer httpreq.Body.Close()
+
+	m, err := readDNS(httpreq.Body, httpreq.ContentLength)
+	if err != nil {
+		return nil, err
+	}
+
+	return NewRequest(*m), nil
 }
 
 // Forward sets the "Forwarded" header defined in RFC 7239, section 4. This
@@ -115,6 +154,15 @@ type Response struct {
 	Body dns.Msg
 }
 
+func NewResponse(m dns.Msg) *Response {
+	return &Response{
+		ID:         int64(m.Id),
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       m,
+	}
+}
+
 // ReadResponse reads and returns HTTP response with encapsulated DNS
 // response from r.
 func ReadResponse(r *bufio.Reader) (*Response, error) {
@@ -125,29 +173,38 @@ func ReadResponse(r *bufio.Reader) (*Response, error) {
 
 	defer httpresp.Body.Close()
 
-	// ContentLength is unknown, response can't be extracted.
-	bodyLen := httpresp.ContentLength
-	if bodyLen < 0 {
-		return nil, errContentLength
-	}
-
-	b, err := ioutil.ReadAll(io.LimitReader(httpresp.Body, bodyLen))
-	if err != nil {
-		return nil, err
-	}
-
-	var dnsresp dns.Msg
-	err = dnsresp.Unpack(b)
+	m, err := readDNS(httpresp.Body, httpresp.ContentLength)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Response{
-		ID:         int64(dnsresp.Id),
+		ID:         int64(m.Id),
 		StatusCode: httpresp.StatusCode,
 		Header:     httpresp.Header,
-		Body:       dnsresp,
+		Body:       *m,
 	}, nil
+}
+
+func (r *Response) Write(w io.Writer) error {
+	b, err := r.Body.Pack()
+	if err != nil {
+		return err
+	}
+
+	httpresp := http.Response{
+		StatusCode:    r.StatusCode,
+		Header:        r.Header,
+		Body:          ioutil.NopCloser(bytes.NewReader(b)),
+		ContentLength: int64(len(b)),
+	}
+
+	return httpresp.Write(w)
+}
+
+func (r *Response) Redirect() *Response {
+	r.StatusCode = http.StatusTemporaryRedirect
+	return r
 }
 
 type Handler interface {
