@@ -95,7 +95,10 @@ func ReadRequest(r *bufio.Reader) (*Request, error) {
 		return nil, err
 	}
 
-	return NewRequest(*m), nil
+	req := NewRequest(*m)
+	req.Header = httpreq.Header
+
+	return req, nil
 }
 
 // Forward sets the "Forwarded" header defined in RFC 7239, section 4. This
@@ -112,7 +115,7 @@ func (r *Request) Forward(laddr, raddr net.Addr) *Request {
 	if raddr == nil {
 		raddr = anyAddr("unknown")
 	}
-	r.Header.Set("forwarded", fmt.Sprintf("by=%q;for=%q", laddr, raddr))
+	r.Header.Set("Forwarded", fmt.Sprintf("by=%q;for=%q", laddr, raddr))
 	return r
 }
 
