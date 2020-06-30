@@ -3,6 +3,7 @@ package hectocorn
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -51,6 +52,15 @@ func ServeCore(h CoreHandler) {
 			os.Stderr.WriteString("e:" + err.Error() + "\n")
 			return
 		}
+
+		os.Stderr.WriteString("e:>>>" + req.Header.Get("Forwarded") + "\n")
+		fwh, err := hectoserver.ParseForwarded(req.Header.Get("Forwarded"))
+		if err != nil {
+			os.Stderr.WriteString("e:" + err.Error() + "\n")
+			return
+		}
+
+		os.Stderr.WriteString(fmt.Sprintf("%#v \n", fwh))
 
 		var rw response
 		rcode, err := h.ServeDNS(context.TODO(), &rw, &req.Body)
