@@ -3,7 +3,6 @@ package hectocorn
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -25,12 +24,8 @@ type response struct {
 	laddr, raddr net.Addr
 }
 
-func (r *response) LocalAddr() net.Addr { panic("local addr") }
-
-func (r *response) RemoteAddr() net.Addr {
-	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5335}
-}
-
+func (r *response) LocalAddr() net.Addr         { return r.laddr }
+func (r *response) RemoteAddr() net.Addr        { return r.raddr }
 func (r *response) WriteMsg(msg *dns.Msg) error { r.msg = msg; return nil }
 func (r *response) Write([]byte) (int, error)   { return 0, io.EOF }
 func (r *response) Close() error                { return nil }
@@ -44,33 +39,35 @@ func ServeCore(h CoreHandler) {
 
 	buf := bufio.NewReadWriter(r, w)
 
-	os.Stderr.WriteString("d:starting ...\n")
+	Log.Debug("starting...")
 
 	for {
 		req, err := hectoserver.ReadRequest(buf.Reader)
 		if err != nil {
-			os.Stderr.WriteString("e:" + err.Error() + "\n")
+			Log.Error(err.Error())
 			return
 		}
 
-		os.Stderr.WriteString("e:>>>" + req.Header.Get("Forwarded") + "\n")
 		fwh, err := hectoserver.ParseForwarded(req.Header.Get("Forwarded"))
 		if err != nil {
-			os.Stderr.WriteString("e:" + err.Error() + "\n")
+			Log.Error(err.Error())
 			return
 		}
 
-		os.Stderr.WriteString(fmt.Sprintf("%#v \n", fwh))
+		if len(fwh.For) == 0 {
+			continue
+		}
 
-		var rw response
+		rw := response{laddr: &fwh.By, raddr: &fwh.For[len(fwh.For)-1]}
+
 		rcode, err := h.ServeDNS(context.TODO(), &rw, &req.Body)
 		if err != nil {
-			os.Stderr.WriteString("e:" + err.Error() + "\n")
+			Log.Error(err.Error())
 			return
 		}
 
 		if rcode != dns.RcodeSuccess {
-			os.Stderr.WriteString("e:failed to process\n")
+			Log.Error("failed to process request")
 			return
 		}
 
@@ -78,7 +75,7 @@ func ServeCore(h CoreHandler) {
 
 		err = resp.Write(buf)
 		if err != nil {
-			os.Stderr.WriteString("e:failed to write response\n")
+			Log.Error("failed to write response")
 		}
 
 		buf.Flush()
