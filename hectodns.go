@@ -27,8 +27,7 @@ type Proc struct {
 func NewProc(config *hectoserver.Config) (*Proc, error) {
 	var shutdowners []hectoserver.ShutdownFunc
 
-	// Configure console logger for the program.
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	// Put the global logger into the context.
 	ctx := log.Logger.WithContext(context.Background())
 
 	proc := &Proc{
@@ -100,6 +99,9 @@ func main() {
 	var opts struct {
 		configFile string
 	}
+
+	// Configure console logger for the program.
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
 	run := func(cmd *cobra.Command, args []string) {
 		var proc *Proc

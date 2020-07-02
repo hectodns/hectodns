@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pkg/errors"
+	"github.com/zclconf/go-cty/cty"
 )
 
 // ResolverConfig is a configuration of a single resolver.
@@ -15,7 +16,7 @@ type ResolverConfig struct {
 	Name string `hcl:"resolver,label"`
 
 	// Options is a list of additional options to execute the resolver.
-	Options map[string]string `hcl:"options,optional"`
+	Options cty.Value `hcl:"options,optional"`
 
 	Preload bool `hcl:"preload,optional"`
 

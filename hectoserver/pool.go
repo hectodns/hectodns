@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/rs/zerolog"
+	"github.com/zclconf/go-cty/cty/json"
 )
 
 // ShutdownFunc tells a handler to terminate its work. ShutdownFunc
@@ -39,11 +40,16 @@ func CreateAndServe(ctx context.Context, config *ServerConfig) (Handler, Shutdow
 
 	for i, r := range config.Resolvers {
 		r := r
+		b, err := json.Marshal(r.Options, r.Options.Type())
+		if err != nil {
+			return nil, nil, err
+		}
+
 		newConn := func() *Conn {
 			return &Conn{
 				Root:            config.Root,
 				Procname:        r.Name,
-				Procenv:         r.Options,
+				Procenv:         string(b),
 				MaxIdleRequests: r.MaxIdle,
 			}
 		}
@@ -56,7 +62,7 @@ func CreateAndServe(ctx context.Context, config *ServerConfig) (Handler, Shutdow
 		}
 
 		pool := &ConnPool{Cap: poolCap, New: newConn}
-		err := pool.Serve(ctx)
+		err = pool.Serve(ctx)
 		if err != nil {
 			return nil, shutdownFunc, err
 		}
