@@ -11,7 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/spf13/cobra"
+	"github.com/urfave/cli/v2"
 
 	"github.com/hectodns/hectodns/hectoserver"
 )
@@ -95,6 +95,14 @@ func (p *Proc) Terminate() error {
 	return nil
 }
 
+var (
+	cmdTemplate = `{{.Usage}}
+
+{{.Name}} options:{{range $index, $option := .VisibleFlags}}
+	{{$option}}{{end}}
+`
+)
+
 func main() {
 	var opts struct {
 		configFile string
@@ -103,7 +111,7 @@ func main() {
 	// Configure console logger for the program.
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
-	run := func(cmd *cobra.Command, args []string) {
+	actionFn := func(ctx *cli.Context) error {
 		var proc *Proc
 
 		termC := make(chan os.Signal, 1)
@@ -133,18 +141,27 @@ func main() {
 		if err = proc.Spawn(); err != nil {
 			log.Fatal().Msg(err.Error())
 		}
+
+		return nil
 	}
 
-	cmd := cobra.Command{
-		Use:   "hectodns",
-		Short: "hectodns - a command to launch Hecto DNS server",
-		Run:   run,
+	cmd := cli.App{
+		Name:   "hectodns",
+		Usage:  "hectodns - a command to launch HectoDNS server",
+		Action: actionFn,
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:        "config-file",
+				Aliases:     []string{"c"},
+				Destination: &opts.configFile,
+				Usage:       "hectodns-specific configuration `FILE`",
+				Required:    true,
+			},
+		},
+		CustomAppHelpTemplate: cmdTemplate,
 	}
 
-	cmd.Flags().StringVarP(&opts.configFile, "config-file", "c", "", "hectodns-specific configuration file")
-	cmd.MarkFlagRequired("config-file")
-
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.Run(os.Args); err != nil {
 		fmt.Println(err)
 	}
 }
