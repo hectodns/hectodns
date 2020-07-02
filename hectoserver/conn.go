@@ -3,7 +3,6 @@ package hectoserver
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -73,7 +72,7 @@ type Conn struct {
 	Procopts []string
 
 	// Procenv is a process environment variables.
-	Procenv map[string]string
+	Procenv string
 
 	// MaxIdleRequests is the maximum requests waiting for processing,
 	// when stet to zero, no idle requests are allowed.
@@ -128,11 +127,6 @@ func (conn *Conn) setState(from, to ConnState) (ok bool) {
 func (conn *Conn) forkexec() (proc *os.Process, r, w, e *os.File, err error) {
 	var stdin, stdout, stderr *os.File
 
-	b, err := json.Marshal(conn.Procenv)
-	if err != nil {
-		return
-	}
-
 	// Close unnecessary files, ingore errors.
 	defer func() {
 		closeall(stdin, stdout)
@@ -175,7 +169,7 @@ func (conn *Conn) forkexec() (proc *os.Process, r, w, e *os.File, err error) {
 
 	proc, err = os.StartProcess(name, argv, &os.ProcAttr{
 		Files: []*os.File{stdin, stdout, stderr},
-		Env:   append(os.Environ(), "hectodns.options="+string(b)),
+		Env:   append(os.Environ(), "hectodns.options="+conn.Procenv),
 	})
 
 	return
