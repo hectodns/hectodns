@@ -31,3 +31,9 @@ func (l *Logger) Warn(format string, a ...interface{}) {
 func (l *Logger) Error(format string, a ...interface{}) {
 	l.log("e", format, a...)
 }
+
+// Fatal is equivalent to Error() followed by a call to os.Exit(1).
+func (l *Logger) Fatal(format string, a ...interface{}) {
+	l.log("e", format, a...)
+	os.Exit(1)
+}
