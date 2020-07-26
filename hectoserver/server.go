@@ -78,6 +78,8 @@ func (h *httpHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 
 		fwreq := NewRequest(r).Forward(laddr, anyAddr(req.RemoteAddr))
+		fwreq.RequestURI = req.RequestURI
+
 		resp, err := h.Handle(ctx, fwreq)
 		if err != nil {
 			http.Error(rw, "no response", http.StatusInternalServerError)

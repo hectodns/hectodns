@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -18,7 +19,6 @@ import (
 
 const (
 	httpMethod    = http.MethodPost
-	httpURL       = "/dns-query"
 	httpUserAgent = "HectoDNS"
 )
 
@@ -57,8 +57,15 @@ func readDNS(r io.Reader, rlen int64) (m *dns.Msg, err error) {
 }
 
 type Request struct {
-	// ID is a unique identifier of the request.
+	// ID is a unique identifier of the request. It's the same as DNS
+	// request identifier.
 	ID int64
+
+	// RequestURI is a path where request was submitted.
+	//
+	// For some applications it is usefull to extract parameters from
+	// the URL. This URL will be copied to each plugin.
+	RequestURI string
 
 	Header http.Header
 
@@ -125,12 +132,17 @@ func (r *Request) Write(w io.Writer) error {
 		return err
 	}
 
+	httpURL := "/"
+	if r.RequestURI != "" {
+		httpURL = r.RequestURI
+	}
+
 	httpreq, err := http.NewRequest(httpMethod, httpURL, bytes.NewBuffer(b))
 	if err != nil {
 		return err
 	}
 
-	httpreq.Header.Set("user-agent", httpUserAgent)
+	httpreq.Header.Set("User-Agent", httpUserAgent)
 
 	// Override request headers with user-defined headers,
 	// so the plugins could be access to this information.
@@ -230,6 +242,12 @@ type multiHandler struct {
 func (mh *multiHandler) Handle(ctx context.Context, req *Request) (*Response, error) {
 	log := zerolog.Ctx(ctx).With().Uint16("id", req.Body.Id).Logger()
 	log.Debug().Msg("received request")
+
+	if log.GetLevel() <= zerolog.DebugLevel {
+		b, _ := req.Body.Pack()
+		b64 := base64.RawURLEncoding.EncodeToString(b)
+		log.Debug().Str("b64", b64).Msg("request received")
+	}
 
 	// Bypass the logger though context of the handler.
 	ctx = log.WithContext(ctx)
