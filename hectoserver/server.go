@@ -9,6 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/net/netutil"
 )
 
 var (
@@ -21,21 +22,48 @@ type Listener interface {
 	Shutdown(context.Context) error
 }
 
-func Listen(proto, addr string, h Handler) (Listener, error) {
+type ListenConfig struct {
+	Addr     string
+	MaxConns int
+}
+
+func Listen(proto string, lc ListenConfig, h Handler) (Listener, error) {
 	switch proto {
 	case "udp":
-		return ListenUDP(addr, h), nil
+		return ListenUDP(lc, h), nil
 	case "tcp":
-		return ListenTCP(addr, h), nil
+		return ListenTCP(lc, h), nil
 	case "http":
-		return ListenHTTP(addr, h), nil
+		return ListenHTTP(lc, h), nil
 	default:
 		return nil, ErrProtoUnknown
 	}
 }
 
-func ListenHTTP(addr string, h Handler) Listener {
-	return &http.Server{Addr: addr, Handler: ServeHTTP(h)}
+type httpServer struct {
+	http.Server
+	ListenConfig
+}
+
+func (s *httpServer) ListenAndServe() error {
+	ln, err := net.Listen("tcp", s.ListenConfig.Addr)
+	if err != nil {
+		return err
+	}
+
+	if s.ListenConfig.MaxConns > 0 {
+		ln = netutil.LimitListener(ln, s.ListenConfig.MaxConns)
+		log.Debug().Msgf("set max connections to %d", s.ListenConfig.MaxConns)
+	}
+
+	return s.Server.Serve(ln)
+}
+
+func ListenHTTP(lc ListenConfig, h Handler) Listener {
+	return &httpServer{
+		Server:       http.Server{Handler: ServeHTTP(h)},
+		ListenConfig: lc,
+	}
 }
 
 func ServeHTTP(h Handler) http.Handler {
@@ -98,15 +126,15 @@ func (h *httpHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func ListenUDP(addr string, h Handler) Listener {
+func ListenUDP(lc ListenConfig, h Handler) Listener {
 	return &dnsServer{
-		Server: dns.Server{Addr: addr, Net: "udp", Handler: ServeDNS(h)},
+		Server: dns.Server{Addr: lc.Addr, Net: "udp", Handler: ServeDNS(h)},
 	}
 }
 
-func ListenTCP(addr string, h Handler) Listener {
+func ListenTCP(lc ListenConfig, h Handler) Listener {
 	return &dnsServer{
-		Server: dns.Server{Addr: addr, Net: "tcp", Handler: ServeDNS(h)},
+		Server: dns.Server{Addr: lc.Addr, Net: "tcp", Handler: ServeDNS(h)},
 	}
 }
 
