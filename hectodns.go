@@ -44,7 +44,12 @@ func NewProc(config *hectoserver.Config) (*Proc, error) {
 			return proc, err
 		}
 
-		ln, err := hectoserver.Listen(conf.Proto, conf.Listen, h)
+		lc := hectoserver.ListenConfig{
+			Addr:     conf.Listen,
+			MaxConns: conf.MaxConns,
+		}
+
+		ln, err := hectoserver.Listen(conf.Proto, lc, h)
 		if err != nil {
 			return proc, err
 		}

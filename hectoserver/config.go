@@ -53,6 +53,13 @@ type ServerConfig struct {
 	//	proto = "tcp"
 	Proto string `hcl:"proto,attr"`
 
+	// Maximum number of concurrent connection, zero is no limit.
+	//
+	// Example:
+	//
+	//	max_conns = 512
+	MaxConns int `hcl:"max_conns,optional"`
+
 	// Timeout is an optional maximum time for processing each request
 	// by a single resolver.
 	Timeout *int `hcl:"timeout,attr"`

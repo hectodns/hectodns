@@ -40,9 +40,17 @@ func CreateAndServe(ctx context.Context, config *ServerConfig) (Handler, Shutdow
 
 	for i, r := range config.Resolvers {
 		r := r
-		b, err := json.Marshal(r.Options, r.Options.Type())
-		if err != nil {
-			return nil, nil, err
+
+		var (
+			b   []byte
+			err error
+		)
+
+		if op := r.Options; !op.IsNull() {
+			b, err = json.Marshal(op, op.Type())
+			if err != nil {
+				return nil, nil, err
+			}
 		}
 
 		newConn := func() *Conn {
