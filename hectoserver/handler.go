@@ -84,6 +84,49 @@ func NewRequest(dnsreq dns.Msg) *Request {
 	}
 }
 
+type anyAddr string
+
+func (a anyAddr) Network() string { return "any" }
+func (a anyAddr) String() string  { return string(a) }
+
+func ParseRequest(req *http.Request) (*Request, error) {
+	var (
+		bytes []byte
+		err   error
+	)
+
+	switch req.Method {
+	case http.MethodGet:
+		query := req.URL.Query().Get("dns")
+		if query == "" {
+			return nil, Error{err: "missing 'dns' query in request"}
+		}
+
+		bytes, err = base64.RawURLEncoding.DecodeString(query)
+		if err != nil {
+			return nil, Error{err: err.Error()}
+		}
+	case http.MethodPost:
+		limrd := io.LimitReader(req.Body, req.ContentLength)
+		bytes, err = ioutil.ReadAll(limrd)
+	default:
+		return nil, Error{err: "not supported HTTP method"}
+	}
+
+	var r dns.Msg
+	err = r.Unpack(bytes)
+	if err != nil {
+		return nil, Error{err: "broken 'dns' query"}
+	}
+
+	laddr, _ := req.Context().Value(http.LocalAddrContextKey).(net.Addr)
+
+	fwreq := NewRequest(r).Forward(laddr, anyAddr(req.RemoteAddr))
+	fwreq.RequestURI = req.RequestURI
+
+	return fwreq, nil
+}
+
 // ReadRequest reads and parses an incoming request from r.
 //
 // ReadRequst is a low-level function and should only be used for specialized
