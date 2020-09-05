@@ -129,12 +129,12 @@ func (conn *Conn) forkexec() (proc *os.Process, r, w, e *os.File, err error) {
 
 	// Close unnecessary files, ingore errors.
 	defer func() {
-		closeall(stdin, stdout)
+		try(stdin.Close, stdout.Close)
 	}()
 
 	defer func() {
 		if err != nil {
-			closeall(r, w)
+			try(r.Close, w.Close)
 		}
 	}()
 
@@ -233,8 +233,9 @@ func (conn *Conn) Serve(ctx context.Context) (err error) {
 }
 
 type pub struct {
-	req *Request
-	C   chan<- *Response
+	req   *Request
+	C     chan<- *Response
+	waitC chan struct{}
 }
 
 // writer is a goroutine that writes requets to the pipe connected
@@ -319,6 +320,7 @@ func (conn *Conn) reader(ctx context.Context, rd io.ReadCloser) (err error) {
 
 			pub.C <- resp
 			close(pub.C)
+			close(pub.waitC)
 
 		// Handle cancellations propagated from the Serve call, it's
 		// likely such calls are initialited by the API users, therfore
@@ -399,20 +401,45 @@ func (conn *Conn) close(graceful bool) {
 		return
 	}
 
+	// Close the incoming requests queue, so only enqueued requests can
+	// be processed.
+	close(conn.sendC)
+
+	// When the shutdown is graceful, wait until queue is empty.
+	if graceful {
+		conn.pubmu.Lock()
+
+		// Copy the list of response channels, wait until each of them is
+		// closed, which indicates the completion of request processing.
+		chans := make([]chan struct{}, 0, len(conn.pubmap))
+		for _, pub := range conn.pubmap {
+			chans = append(chans, pub.waitC)
+		}
+
+		conn.pubmu.Unlock()
+
+		conn.logger.Debug().Msgf("waiting for comletion of %d requests", len(chans))
+		for _, ch := range chans {
+			<-ch
+		}
+	}
+
 	conn.proc.Kill()
 	conn.proc.Wait()
 
 	conn.log().Debug().Msg("process killed")
 
-	// Terminate the goroutines at first, and only then close the
-	// channel for processing requests.
+	// Terminate the writer/reader and errorer goroutines.
 	close(conn.stopC)
-	close(conn.sendC)
 
 	conn.pubmap = nil
 	conn.proc = nil
 }
 
+// Shutdown waits for completion of unprocessed requests.
+//
+// Once Shutdown has been called on a connection, it may not be reused; future
+// calls to methods such as Handle will return ErrConnClosed.
 func (conn *Conn) Shutdown() error {
 	conn.close(true)
 	return nil
@@ -446,7 +473,7 @@ func (conn *Conn) Handle(ctx context.Context, req *Request) (*Response, error) {
 	// Create a buffered channel in order to prevent locking of the
 	// reader goroutine on submission of the response.
 	respC := make(chan *Response, 1)
-	conn.sendC <- pub{req: req, C: respC}
+	conn.sendC <- pub{req: req, C: respC, waitC: make(chan struct{})}
 
 	// Increment the number of requests submitted for processing.
 	atomic.AddInt32(&conn.pubs, 1)
@@ -478,11 +505,10 @@ func checkerr(errs ...error) (err error) {
 	return
 }
 
-// closeall closes all passed Closers sequentially.
-func closeall(closers ...io.Closer) (err error) {
-	for _, c := range closers {
-		if c != nil {
-			err = checkerr(err, c.Close())
+func try(fns ...func() error) (err error) {
+	for _, fn := range fns {
+		if fn != nil {
+			err = checkerr(err, fn())
 		}
 	}
 	return
