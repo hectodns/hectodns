@@ -2,7 +2,6 @@ package hectoserver
 
 import (
 	"context"
-	"encoding/base64"
 	"net"
 	"net/http"
 	"strconv"
@@ -74,56 +73,34 @@ type httpHandler struct {
 	Handler
 }
 
-type anyAddr string
-
-func (a anyAddr) Network() string { return "any" }
-func (a anyAddr) String() string  { return string(a) }
-
 func (h *httpHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	ctx := log.Logger.WithContext(req.Context())
-	laddr, _ := req.Context().Value(http.LocalAddrContextKey).(net.Addr)
-
 	switch req.Method {
-	case http.MethodGet:
-		query := req.URL.Query().Get("dns")
-		if query == "" {
-			rw.WriteHeader(http.StatusBadRequest)
-			http.Error(rw, "missing 'dns' query in request", http.StatusBadRequest)
-			return
-		}
-
-		b64, err := base64.RawURLEncoding.DecodeString(query)
-		if err != nil {
-			http.Error(rw, "", http.StatusBadRequest)
-			return
-		}
-
-		var r dns.Msg
-		err = r.Unpack(b64)
-		if err != nil {
-			http.Error(rw, "broken 'dns' query", http.StatusBadRequest)
-			return
-		}
-
-		fwreq := NewRequest(r).Forward(laddr, anyAddr(req.RemoteAddr))
-		fwreq.RequestURI = req.RequestURI
-
-		resp, err := h.Handle(ctx, fwreq)
-		if err != nil {
-			http.Error(rw, "no response", http.StatusInternalServerError)
-			return
-		}
-
-		buf, _ := resp.Body.Pack()
-
-		rw.Header().Set("Content-Type", "application/dns-message")
-		rw.Header().Set("Content-Length", strconv.Itoa(len(buf)))
-
-		rw.WriteHeader(http.StatusOK)
-		rw.Write(buf)
+	case http.MethodGet, http.MethodPost:
 	default:
 		http.Error(rw, "", http.StatusMethodNotAllowed)
 	}
+
+	fwreq, err := ParseRequest(req)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ctx := log.Logger.WithContext(req.Context())
+
+	resp, err := h.Handle(ctx, fwreq)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	buf, _ := resp.Body.Pack()
+
+	rw.Header().Set("Content-Type", "application/dns-message")
+	rw.Header().Set("Content-Length", strconv.Itoa(len(buf)))
+
+	rw.WriteHeader(http.StatusOK)
+	rw.Write(buf)
 }
 
 func ListenUDP(lc ListenConfig, h Handler) Listener {
