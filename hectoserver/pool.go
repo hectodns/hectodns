@@ -2,7 +2,6 @@ package hectoserver
 
 import (
 	"context"
-	"io"
 	"sync"
 	"sync/atomic"
 
@@ -25,18 +24,30 @@ func ShutdownAll(fn ...ShutdownFunc) (err error) {
 	return
 }
 
+type Server struct {
+	Handler
+	Shutdown ShutdownFunc
+	Close    ShutdownFunc
+}
+
 // CreateAndServe creates new connections to the specifies resolvers,
 // and returns handler instance to bypass them a single DNS request.
 //
-// Method returns ShutdownFunc to control lifetime of the handlers,
-// after calling it, handler will return an error on attempt to process
-// a request.
-func CreateAndServe(ctx context.Context, config *ServerConfig) (Handler, ShutdownFunc, error) {
-	handlers := make([]Handler, len(config.Resolvers))
-	closers := make([]io.Closer, len(config.Resolvers))
+// Method returns Shutdown and Close functions to control lifetime of the
+// handler, after calling it, handler will return an error on attempt to
+// process a new request.
+func CreateAndServe(ctx context.Context, config *ServerConfig) (Server, error) {
+	var (
+		handlers    = make([]Handler, len(config.Resolvers))
+		shutdowners = make([]func() error, len(config.Resolvers))
+		closers     = make([]func() error, len(config.Resolvers))
+	)
 
 	// Return a function to control the lifetime of the handlers.
-	shutdownFunc := func() error { return closeall(closers...) }
+	s := Server{
+		Shutdown: func() error { return try(shutdowners...) },
+		Close:    func() error { return try(closers...) },
+	}
 
 	for i, r := range config.Resolvers {
 		r := r
@@ -49,7 +60,7 @@ func CreateAndServe(ctx context.Context, config *ServerConfig) (Handler, Shutdow
 		if op := r.Options; !op.IsNull() {
 			b, err = json.Marshal(op, op.Type())
 			if err != nil {
-				return nil, nil, err
+				return s, err
 			}
 		}
 
@@ -72,14 +83,16 @@ func CreateAndServe(ctx context.Context, config *ServerConfig) (Handler, Shutdow
 		pool := &ConnPool{Cap: poolCap, New: newConn}
 		err = pool.Serve(ctx)
 		if err != nil {
-			return nil, shutdownFunc, err
+			return s, err
 		}
 
 		handlers[i] = pool
-		closers[i] = pool
+		shutdowners[i] = pool.Shutdown
+		closers[i] = pool.Close
 	}
 
-	return MultiHandler(handlers...), shutdownFunc, nil
+	s.Handler = MultiHandler(handlers...)
+	return s, nil
 }
 
 type ConnPool struct {
@@ -130,6 +143,16 @@ func (pool *ConnPool) Close() error {
 
 	for _, c := range pool.conns {
 		c.Close()
+	}
+	return nil
+}
+
+func (pool *ConnPool) Shutdown() error {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+
+	for _, c := range pool.conns {
+		c.Shutdown()
 	}
 	return nil
 }

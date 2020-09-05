@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"syscall"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -18,6 +19,7 @@ import (
 
 type Proc struct {
 	ctx      context.Context
+	close    hectoserver.ShutdownFunc
 	shutdown hectoserver.ShutdownFunc
 
 	configs   []hectoserver.ServerConfig
@@ -25,7 +27,10 @@ type Proc struct {
 }
 
 func NewProc(config *hectoserver.Config) (*Proc, error) {
-	var shutdowners []hectoserver.ShutdownFunc
+	var (
+		closers     []hectoserver.ShutdownFunc
+		shutdowners []hectoserver.ShutdownFunc
+	)
 
 	// Put the global logger into the context.
 	ctx := log.Logger.WithContext(context.Background())
@@ -35,11 +40,17 @@ func NewProc(config *hectoserver.Config) (*Proc, error) {
 		shutdown: hectoserver.ShutdownFunc(func() error {
 			return hectoserver.ShutdownAll(shutdowners...)
 		}),
+		close: hectoserver.ShutdownFunc(func() error {
+			return hectoserver.ShutdownAll(closers...)
+		}),
 	}
 
 	for _, conf := range config.Servers {
-		h, shutdownFunc, err := hectoserver.CreateAndServe(ctx, &conf)
-		shutdowners = append(shutdowners, shutdownFunc)
+		srv, err := hectoserver.CreateAndServe(ctx, &conf)
+
+		closers = append(closers, srv.Close)
+		shutdowners = append(shutdowners, srv.Shutdown)
+
 		if err != nil {
 			return proc, err
 		}
@@ -49,7 +60,7 @@ func NewProc(config *hectoserver.Config) (*Proc, error) {
 			MaxConns: conf.MaxConns,
 		}
 
-		ln, err := hectoserver.Listen(conf.Proto, lc, h)
+		ln, err := hectoserver.Listen(conf.Proto, lc, srv.Handler)
 		if err != nil {
 			return proc, err
 		}
@@ -71,6 +82,8 @@ func (p *Proc) Spawn() (err error) {
 		errs = make([]error, len(p.listeners))
 	)
 
+	log.Info().Msgf("main process pid %d", os.Getpid())
+
 	for i, ln := range p.listeners {
 		wg.Add(1)
 		go func(i int, ln hectoserver.Listener) {
@@ -91,7 +104,16 @@ func (p *Proc) Spawn() (err error) {
 	return nil
 }
 
-func (p *Proc) Terminate() error {
+func (p *Proc) Kill() error {
+	defer p.close()
+
+	for _, ln := range p.listeners {
+		ln.Shutdown(context.TODO())
+	}
+	return nil
+}
+
+func (p *Proc) Quit() error {
 	defer p.shutdown()
 
 	for _, ln := range p.listeners {
@@ -120,14 +142,19 @@ func main() {
 		var proc *Proc
 
 		termC := make(chan os.Signal, 1)
-		signal.Notify(termC, os.Interrupt, os.Kill)
+		signal.Notify(termC, syscall.SIGINT, syscall.SIGKILL, syscall.SIGQUIT)
 
 		go func() {
 			http.ListenAndServe("localhost:6060", nil)
 		}()
 		go func() {
-			if <-termC; proc != nil {
-				proc.Terminate()
+			if sig := <-termC; proc != nil {
+				switch sig {
+				case syscall.SIGKILL, syscall.SIGINT:
+					proc.Kill()
+				case syscall.SIGQUIT:
+					proc.Quit()
+				}
 			}
 		}()
 
@@ -141,7 +168,7 @@ func main() {
 			log.Fatal().Msg(err.Error())
 		}
 
-		defer proc.Terminate()
+		defer proc.Kill()
 
 		if err = proc.Spawn(); err != nil {
 			log.Fatal().Msg(err.Error())
