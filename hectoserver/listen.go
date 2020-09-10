@@ -11,6 +11,11 @@ import (
 	"golang.org/x/net/netutil"
 )
 
+const (
+	defaultAddr  = ":53"
+	defaultProto = "udp"
+)
+
 var (
 	ErrProtoUnknown = Error{err: "unknown protocol"}
 )
@@ -21,22 +26,46 @@ type Listener interface {
 	Shutdown(context.Context) error
 }
 
+// loggingListener is a listener that puts address information into the log.
+type loggingListener struct {
+	Listener
+
+	proto string
+	addr  string
+}
+
+func (ll loggingListener) ListenAndServe() error {
+	log.Info().Msgf("started (%s) at %s", ll.proto, ll.addr)
+	return ll.Listener.ListenAndServe()
+}
+
 type ListenConfig struct {
 	Addr     string
 	MaxConns int
 }
 
 func Listen(proto string, lc ListenConfig, h Handler) (Listener, error) {
+	if lc.Addr == "" {
+		lc.Addr = defaultAddr
+	}
+	if proto == "" {
+		proto = defaultProto
+	}
+
+	var ln Listener
+
 	switch proto {
 	case "udp":
-		return ListenUDP(lc, h), nil
+		ln = ListenUDP(lc, h)
 	case "tcp":
-		return ListenTCP(lc, h), nil
+		ln = ListenTCP(lc, h)
 	case "http":
-		return ListenHTTP(lc, h), nil
+		ln = ListenHTTP(lc, h)
 	default:
 		return nil, ErrProtoUnknown
 	}
+
+	return loggingListener{Listener: ln, proto: proto, addr: lc.Addr}, nil
 }
 
 type httpServer struct {

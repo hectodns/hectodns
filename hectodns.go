@@ -87,7 +87,6 @@ func (p *Proc) Spawn() (err error) {
 	for i, ln := range p.listeners {
 		wg.Add(1)
 		go func(i int, ln hectoserver.Listener) {
-			log.Info().Msgf("started (%s) at %s", p.configs[i].Proto, p.configs[i].Listen)
 			errs[i] = ln.ListenAndServe()
 			wg.Done()
 		}(i, ln)
