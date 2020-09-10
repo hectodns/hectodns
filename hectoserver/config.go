@@ -42,7 +42,7 @@ type ServerConfig struct {
 	//
 	// 	listen = ":5353"
 	// 	listen = "0.0.0.0:53"
-	Listen string `hcl:"listen"`
+	Listen string `hcl:"listen,optional"`
 
 	// Proto specifies the protocol that will be used for communication
 	// with remotes queriers.
@@ -51,7 +51,7 @@ type ServerConfig struct {
 	//
 	// 	proto = "udp"
 	//	proto = "tcp"
-	Proto string `hcl:"proto,attr"`
+	Proto string `hcl:"proto,optional"`
 
 	// Maximum number of concurrent connection, zero is no limit.
 	//
@@ -60,9 +60,9 @@ type ServerConfig struct {
 	//	max_conns = 512
 	MaxConns int `hcl:"max_conns,optional"`
 
-	// Timeout is an optional maximum time for processing each request
+	// RequestTimeout is an optional maximum time for processing each request
 	// by a single resolver.
-	Timeout *int `hcl:"timeout,attr"`
+	RequestTimeout *int `hcl:"request_timeout,attr"`
 
 	// Resolvers is a sequence of resolution plugins that are sequentially
 	// polled in order to retrieve a response on the processing request.
