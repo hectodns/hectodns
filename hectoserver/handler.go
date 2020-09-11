@@ -269,6 +269,18 @@ type Handler interface {
 	Handle(context.Context, *Request) (*Response, error)
 }
 
+type timeoutHandler struct {
+	timeout time.Duration
+	Handler
+}
+
+func (h timeoutHandler) Handle(ctx context.Context, req *Request) (*Response, error) {
+	ctx, cancel := context.WithTimeout(ctx, h.timeout)
+	defer cancel()
+
+	return h.Handler.Handle(ctx, req)
+}
+
 func MultiHandler(hh ...Handler) Handler {
 	return &multiHandler{hh}
 }

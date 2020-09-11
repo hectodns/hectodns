@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/rs/zerolog/log"
@@ -40,8 +41,9 @@ func (ll loggingListener) ListenAndServe() error {
 }
 
 type ListenConfig struct {
-	Addr     string
-	MaxConns int
+	Addr           string
+	MaxConns       int
+	RequestTimeout time.Duration
 }
 
 func Listen(proto string, lc ListenConfig, h Handler) (Listener, error) {
@@ -53,6 +55,12 @@ func Listen(proto string, lc ListenConfig, h Handler) (Listener, error) {
 	}
 
 	var ln Listener
+
+	if lc.RequestTimeout != 0 {
+		// Add a timeout for processing each request.
+		h = timeoutHandler{Handler: h, timeout: lc.RequestTimeout}
+		log.Debug().Msgf("set %s request timeout", lc.RequestTimeout)
+	}
 
 	switch proto {
 	case "udp":
