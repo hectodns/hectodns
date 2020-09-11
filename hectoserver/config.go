@@ -62,7 +62,7 @@ type ServerConfig struct {
 
 	// RequestTimeout is an optional maximum time for processing each request
 	// by a single resolver.
-	RequestTimeout *int `hcl:"request_timeout,attr"`
+	RequestTimeout string `hcl:"request_timeout,optional"`
 
 	// Resolvers is a sequence of resolution plugins that are sequentially
 	// polled in order to retrieve a response on the processing request.

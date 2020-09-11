@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -26,7 +27,7 @@ type Proc struct {
 	listeners []hectoserver.Listener
 }
 
-func NewProc(config *hectoserver.Config) (*Proc, error) {
+func NewProc(config *hectoserver.Config) (proc *Proc, err error) {
 	var (
 		closers     []hectoserver.ShutdownFunc
 		shutdowners []hectoserver.ShutdownFunc
@@ -35,7 +36,7 @@ func NewProc(config *hectoserver.Config) (*Proc, error) {
 	// Put the global logger into the context.
 	ctx := log.Logger.WithContext(context.Background())
 
-	proc := &Proc{
+	proc = &Proc{
 		ctx: ctx,
 		shutdown: hectoserver.ShutdownFunc(func() error {
 			return hectoserver.ShutdownAll(shutdowners...)
@@ -46,6 +47,15 @@ func NewProc(config *hectoserver.Config) (*Proc, error) {
 	}
 
 	for _, conf := range config.Servers {
+		var requestTimeout time.Duration
+
+		if conf.RequestTimeout != "" {
+			requestTimeout, err = time.ParseDuration(conf.RequestTimeout)
+			if err != nil {
+				return proc, err
+			}
+		}
+
 		srv, err := hectoserver.CreateAndServe(ctx, &conf)
 
 		closers = append(closers, srv.Close)
@@ -56,8 +66,9 @@ func NewProc(config *hectoserver.Config) (*Proc, error) {
 		}
 
 		lc := hectoserver.ListenConfig{
-			Addr:     conf.Listen,
-			MaxConns: conf.MaxConns,
+			Addr:           conf.Listen,
+			MaxConns:       conf.MaxConns,
+			RequestTimeout: requestTimeout,
 		}
 
 		ln, err := hectoserver.Listen(conf.Proto, lc, srv.Handler)
