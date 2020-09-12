@@ -245,7 +245,7 @@ func (conn *Conn) writer(ctx context.Context, wr io.WriteCloser) (err error) {
 
 	// Either on pipe error (failed attempt to write request to
 	// the client, signal master goroutine to close the reader.
-	defer conn.close(false)
+	defer conn.close(ctx, false)
 
 	for {
 		select {
@@ -280,7 +280,7 @@ func (conn *Conn) reader(ctx context.Context, rd io.ReadCloser) (err error) {
 	// response from the connection channel). Then this goroutine
 	// must signal to the master goroutine to terminate the writer
 	// as well.
-	defer conn.close(false)
+	defer conn.close(ctx, false)
 
 	// Channel reader starts a goroutine to read responses sequentially,
 	// this entity is useful in conjunction with select statement.
@@ -345,7 +345,7 @@ const (
 func (conn *Conn) erroer(ctx context.Context, rd io.ReadCloser) (err error) {
 	defer rd.Close()
 
-	defer conn.close(false)
+	defer conn.close(ctx, false)
 
 	reader := chanReader{
 		Read: func(bufr *bufio.Reader) chanResponse {
@@ -391,7 +391,7 @@ func (conn *Conn) erroer(ctx context.Context, rd io.ReadCloser) (err error) {
 	}
 }
 
-func (conn *Conn) close(graceful bool) {
+func (conn *Conn) close(ctx context.Context, graceful bool) {
 	conn.procmu.Lock()
 	defer conn.procmu.Unlock()
 
@@ -418,9 +418,14 @@ func (conn *Conn) close(graceful bool) {
 
 		conn.pubmu.Unlock()
 
-		conn.logger.Debug().Msgf("waiting for comletion of %d requests", len(chans))
+		conn.logger.Debug().Msgf("waiting for completion of %d requests", len(chans))
 		for _, ch := range chans {
-			<-ch
+			select {
+			case <-ch:
+			// Handle timeout of graceful termination.
+			case <-ctx.Done():
+				continue
+			}
 		}
 	}
 
@@ -440,8 +445,8 @@ func (conn *Conn) close(graceful bool) {
 //
 // Once Shutdown has been called on a connection, it may not be reused; future
 // calls to methods such as Handle will return ErrConnClosed.
-func (conn *Conn) Shutdown() error {
-	conn.close(true)
+func (conn *Conn) Shutdown(ctx context.Context) error {
+	conn.close(ctx, true)
 	return nil
 }
 
@@ -450,8 +455,8 @@ func (conn *Conn) Shutdown() error {
 //
 // Once Close has been called on a connection, it may not be reused; future
 // calls to methods such as Handle will return ErrConnClosed.
-func (conn *Conn) Close() error {
-	conn.close(false)
+func (conn *Conn) Close(ctx context.Context) error {
+	conn.close(ctx, false)
 	return nil
 }
 
