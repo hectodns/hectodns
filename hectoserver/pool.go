@@ -12,16 +12,32 @@ import (
 // ShutdownFunc tells a handler to terminate its work. ShutdownFunc
 // waits for the work to stop. A ShutdownFunc may be called by multiple
 // goroutines simultaneously.
-type ShutdownFunc func() error
+type ShutdownFunc func(context.Context) error
 
-// ShutdownAll executes all passed ShutdownFunc sequentially.
-func ShutdownAll(fn ...ShutdownFunc) (err error) {
+// ShutdownAll executes all passed ShutdownFunc concurrently.
+func ShutdownAll(ctx context.Context, fn ...ShutdownFunc) (err error) {
+	errC := make(chan error, len(fn))
+
 	for _, f := range fn {
-		if f != nil {
-			err = checkerr(err, f())
-		}
+		go func(f ShutdownFunc) {
+			if f != nil {
+				errC <- f(ctx)
+			} else {
+				errC <- nil
+			}
+		}(f)
+	}
+
+	for i := 0; i < len(fn); i++ {
+		err = checkerr(err, <-errC)
 	}
 	return
+}
+
+func MultiShutdown(fn ...ShutdownFunc) ShutdownFunc {
+	return func(ctx context.Context) error {
+		return ShutdownAll(ctx, fn...)
+	}
 }
 
 type Server struct {
@@ -36,18 +52,18 @@ type Server struct {
 // Method returns Shutdown and Close functions to control lifetime of the
 // handler, after calling it, handler will return an error on attempt to
 // process a new request.
-func CreateAndServe(ctx context.Context, config *ServerConfig) (Server, error) {
+func CreateAndServe(ctx context.Context, config *ServerConfig) (s Server, err error) {
 	var (
 		handlers    = make([]Handler, len(config.Resolvers))
-		shutdowners = make([]func() error, len(config.Resolvers))
-		closers     = make([]func() error, len(config.Resolvers))
+		shutdowners = make([]ShutdownFunc, len(config.Resolvers))
+		closers     = make([]ShutdownFunc, len(config.Resolvers))
 	)
 
-	// Return a function to control the lifetime of the handlers.
-	s := Server{
-		Shutdown: func() error { return try(shutdowners...) },
-		Close:    func() error { return try(closers...) },
-	}
+	defer func() {
+		s.Shutdown = MultiShutdown(shutdowners...)
+		s.Close = MultiShutdown(closers...)
+		s.Handler = MultiHandler(handlers...)
+	}()
 
 	for i, r := range config.Resolvers {
 		r := r
@@ -66,7 +82,7 @@ func CreateAndServe(ctx context.Context, config *ServerConfig) (Server, error) {
 
 		newConn := func() *Conn {
 			return &Conn{
-				Root:            config.Root,
+				Root:            config.ResolverDirectory,
 				Procname:        r.Name,
 				Procenv:         string(b),
 				MaxIdleRequests: r.MaxIdle,
@@ -91,7 +107,6 @@ func CreateAndServe(ctx context.Context, config *ServerConfig) (Server, error) {
 		closers[i] = pool.Close
 	}
 
-	s.Handler = MultiHandler(handlers...)
 	return s, nil
 }
 
@@ -137,24 +152,28 @@ func (pool *ConnPool) Serve(ctx context.Context) error {
 	return nil
 }
 
-func (pool *ConnPool) Close() error {
+func (pool *ConnPool) Close(ctx context.Context) error {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
-	for _, c := range pool.conns {
-		c.Close()
+	fn := make([]ShutdownFunc, len(pool.conns))
+	for i, conn := range pool.conns {
+		fn[i] = conn.Close
 	}
-	return nil
+
+	return ShutdownAll(ctx, fn...)
 }
 
-func (pool *ConnPool) Shutdown() error {
+func (pool *ConnPool) Shutdown(ctx context.Context) error {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
-	for _, c := range pool.conns {
-		c.Shutdown()
+	fn := make([]ShutdownFunc, len(pool.conns))
+	for i, conn := range pool.conns {
+		fn[i] = conn.Shutdown
 	}
-	return nil
+
+	return ShutdownAll(ctx, fn...)
 }
 
 func (pool *ConnPool) Handle(ctx context.Context, req *Request) (*Response, error) {

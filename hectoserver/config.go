@@ -31,10 +31,10 @@ type ResolverConfig struct {
 
 // ServerConfig is a configuration for a single server instance.
 type ServerConfig struct {
-	// Root sets the root directory for resolvers, when specified
-	// server searches the executable in the given path, otherwise
-	// a PATH will be used.
-	Root string `hcl:"root,optional"`
+	// ResolverDirectory sets the root directory for resolvers, when
+	// specified server searches the executable in the given path,
+	// otherwise a current directory will be used.
+	ResolverDirectory string `hcl:"resolver_directory,optional"`
 
 	// Listen defines an IP address and port used to listen to
 	//
@@ -73,6 +73,10 @@ type ServerConfig struct {
 
 // Config is a structure that holds configurations for the whole DNS server.
 type Config struct {
+	// ServerShutdownTimeout specifies a timeout for graceful shutdown
+	// of a server. When timeout expires, the termination will be enforced.
+	ServerShutdownTimeout string `hcl:"server_shutdown_timeout,optional"`
+
 	Servers []ServerConfig `hcl:"server,block"`
 }
 

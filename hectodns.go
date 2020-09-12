@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -23,8 +22,12 @@ type Proc struct {
 	close    hectoserver.ShutdownFunc
 	shutdown hectoserver.ShutdownFunc
 
+	shutdownTimeout time.Duration
+
 	configs   []hectoserver.ServerConfig
 	listeners []hectoserver.Listener
+
+	waitC chan struct{}
 }
 
 func NewProc(config *hectoserver.Config) (proc *Proc, err error) {
@@ -35,15 +38,20 @@ func NewProc(config *hectoserver.Config) (proc *Proc, err error) {
 
 	// Put the global logger into the context.
 	ctx := log.Logger.WithContext(context.Background())
-
 	proc = &Proc{
-		ctx: ctx,
-		shutdown: hectoserver.ShutdownFunc(func() error {
-			return hectoserver.ShutdownAll(shutdowners...)
-		}),
-		close: hectoserver.ShutdownFunc(func() error {
-			return hectoserver.ShutdownAll(closers...)
-		}),
+		ctx:   ctx,
+		waitC: make(chan struct{}),
+	}
+
+	// Always configure shutdown and close functions.
+	defer func() {
+		proc.shutdown = hectoserver.MultiShutdown(shutdowners...)
+		proc.close = hectoserver.MultiShutdown(closers...)
+	}()
+
+	proc.shutdownTimeout, err = time.ParseDuration(config.ServerShutdownTimeout)
+	if err != nil {
+		return proc, err
 	}
 
 	for _, conf := range config.Servers {
@@ -115,20 +123,38 @@ func (p *Proc) Spawn() (err error) {
 }
 
 func (p *Proc) Kill() error {
-	defer p.close()
+	defer close(p.waitC)
+	defer p.close(p.ctx)
 
 	for _, ln := range p.listeners {
-		ln.Shutdown(context.TODO())
+		ln.Shutdown(p.ctx)
 	}
 	return nil
 }
 
 func (p *Proc) Quit() error {
-	defer p.shutdown()
+	defer close(p.waitC)
+
+	var (
+		ctx    = p.ctx
+		cancel context.CancelFunc
+	)
+
+	if p.shutdownTimeout != 0 {
+		ctx, cancel = context.WithTimeout(p.ctx, p.shutdownTimeout)
+		defer cancel()
+	}
+
+	defer p.shutdown(ctx)
 
 	for _, ln := range p.listeners {
-		ln.Shutdown(context.TODO())
+		ln.Shutdown(ctx)
 	}
+	return nil
+}
+
+func (p *Proc) Wait() error {
+	<-p.waitC
 	return nil
 }
 
@@ -159,11 +185,14 @@ func main() {
 		}()
 		go func() {
 			if sig := <-termC; proc != nil {
+				log.Info().Msgf("received '%s' signal", sig)
 				switch sig {
 				case syscall.SIGKILL, syscall.SIGINT:
 					proc.Kill()
 				case syscall.SIGQUIT:
 					proc.Quit()
+				default:
+					log.Info().Msgf("skipped '%s' signal", sig)
 				}
 			}
 		}()
@@ -178,13 +207,11 @@ func main() {
 			log.Fatal().Msg(err.Error())
 		}
 
-		defer proc.Kill()
-
 		if err = proc.Spawn(); err != nil {
 			log.Fatal().Msg(err.Error())
 		}
 
-		return nil
+		return proc.Wait()
 	}
 
 	cmd := cli.App{
@@ -204,6 +231,6 @@ func main() {
 	}
 
 	if err := cmd.Run(os.Args); err != nil {
-		fmt.Println(err)
+		log.Error().Msg(err.Error())
 	}
 }
