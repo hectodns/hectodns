@@ -269,11 +269,25 @@ type Handler interface {
 	Handle(context.Context, *Request) (*Response, error)
 }
 
+// HandlerFunc is a function adapter to allow use of ordinary functions
+// as request handlers. If f is a function with the appropriate signature,
+// HandlerFunc(f) is a Handler that calls f.
+type HandlerFunc func(context.Context, *Request) (*Response, error)
+
+// Handle implements Handler interface, calls f(ctx, req)
+func (fn HandlerFunc) Handle(ctx context.Context, req *Request) (*Response, error) {
+	return fn(ctx, req)
+}
+
+// timeoutHandler is a handler that limits the handler execution by the
+// specified timeout. Wrapped handler must implement context cancellation.
 type timeoutHandler struct {
 	timeout time.Duration
 	Handler
 }
 
+// Handle implements Handler interface. It adds a timeout to the passed
+// context and then executes a wrapped handler instance.
 func (h timeoutHandler) Handle(ctx context.Context, req *Request) (*Response, error) {
 	ctx, cancel := context.WithTimeout(ctx, h.timeout)
 	defer cancel()
@@ -281,6 +295,11 @@ func (h timeoutHandler) Handle(ctx context.Context, req *Request) (*Response, er
 	return h.Handler.Handle(ctx, req)
 }
 
+// MultiHandler creates a handler that executes all passed handlers one
+// by one until one of them successfully processes the request.
+//
+// If a listed handler returns an error, the overall handle operation
+// stops and returns the error; it does not continue down the list.
 func MultiHandler(hh ...Handler) Handler {
 	return &multiHandler{hh}
 }
