@@ -15,6 +15,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/hectodns/hectodns/hectoserver"
+	"github.com/hectodns/hectodns/managedns"
 )
 
 type Proc struct {
@@ -111,6 +112,19 @@ func (p *Proc) Spawn() (err error) {
 		}(i, ln)
 	}
 
+	srv := http.Server{Addr: ":3000", Handler: managedns.HandleGraphQL()}
+	go srv.ListenAndServe()
+
+	var (
+		origShutdown = p.shutdown
+		origClose    = p.close
+	)
+
+	// Add HTTP server shutdowners in order to properly terminate
+	// the client requests.
+	p.shutdown = hectoserver.MultiShutdown(origShutdown, srv.Shutdown)
+	p.close = hectoserver.MultiShutdown(origClose, srv.Shutdown)
+
 	wg.Wait()
 
 	// Leave only the first non-nil error.
@@ -119,6 +133,7 @@ func (p *Proc) Spawn() (err error) {
 			return err
 		}
 	}
+
 	return nil
 }
 
