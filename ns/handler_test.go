@@ -44,7 +44,7 @@ func TestTimeoutHandler(t *testing.T) {
 		return &resp, nil
 	}
 
-	h := timeoutHandler{Handler: HandlerFunc(fn), timeout: time.Second}
+	h := TimeoutHandler(HandlerFunc(fn), time.Second)
 	r, err := h.Handle(context.TODO(), nil)
 
 	require.NoError(t, err)
