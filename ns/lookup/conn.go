@@ -1,4 +1,4 @@
-package hectoserver
+package lookup
 
 import (
 	"bufio"
@@ -11,7 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/pkg/errors"
+	"github.com/hectodns/hectodns/internal/errutil"
+	"github.com/hectodns/hectodns/ns"
+
 	"github.com/rs/zerolog"
 )
 
@@ -177,7 +179,7 @@ func (conn *Conn) forkexec() (proc *os.Process, r, w, e *os.File, err error) {
 
 // ErrConnStarted is returned by Conn's Server method on attempt to
 // start resolver that is already started.
-var ErrConnStarted = Error{err: "already started"}
+var ErrConnStarted = ns.NewError("already started")
 
 // Serve starts a process with configured arguments, creates communication
 // pipes to send and receive DNS requests over HTTP protocol.
@@ -233,8 +235,8 @@ func (conn *Conn) Serve(ctx context.Context) (err error) {
 }
 
 type pub struct {
-	req   *Request
-	C     chan<- *Response
+	req   *ns.Request
+	C     chan<- *ns.Response
 	waitC chan struct{}
 }
 
@@ -289,7 +291,7 @@ func (conn *Conn) reader(ctx context.Context, rd io.ReadCloser) (err error) {
 	// the response channel.
 	reader := chanReader{
 		Read: func(bufr *bufio.Reader) chanResponse {
-			resp, err := ReadResponse(bufr)
+			resp, err := ns.ReadResponse(bufr)
 			return chanResponse{resp, err}
 		},
 	}
@@ -301,7 +303,7 @@ func (conn *Conn) reader(ctx context.Context, rd io.ReadCloser) (err error) {
 				return err
 			}
 
-			resp := chanresp.ret.(*Response)
+			resp := chanresp.ret.(*ns.Response)
 
 			// Find a channel where to write the response, the request
 			// and response identifiers must match in order to find the
@@ -462,7 +464,7 @@ func (conn *Conn) Close(ctx context.Context) error {
 
 // ErrConnClosed is returned by the Conn's Handle method after a call
 // to Shutdown or Close method.
-var ErrConnClosed = Error{err: "connection closed"}
+var ErrConnClosed = ns.NewError("connection closed")
 
 // Handle implements Handler interface.
 //
@@ -470,14 +472,14 @@ var ErrConnClosed = Error{err: "connection closed"}
 // process and waits for response.
 //
 // After Shutdown or Close, the returned error is ErrConnClosed.
-func (conn *Conn) Handle(ctx context.Context, req *Request) (*Response, error) {
+func (conn *Conn) Handle(ctx context.Context, req *ns.Request) (*ns.Response, error) {
 	if !conn.state.is(StateStarted) {
 		return nil, ErrConnClosed
 	}
 
 	// Create a buffered channel in order to prevent locking of the
 	// reader goroutine on submission of the response.
-	respC := make(chan *Response, 1)
+	respC := make(chan *ns.Response, 1)
 	conn.sendC <- pub{req: req, C: respC, waitC: make(chan struct{})}
 
 	// Increment the number of requests submitted for processing.
@@ -491,29 +493,14 @@ func (conn *Conn) Handle(ctx context.Context, req *Request) (*Response, error) {
 	case <-conn.stopC:
 		return nil, ErrConnClosed
 	case <-ctx.Done():
-		return nil, ErrTimeout
+		return nil, ns.ErrTimeout
 	}
-}
-
-// checkerr returns errors grouped into a single error.
-func checkerr(errs ...error) (err error) {
-	for _, e := range errs {
-		if err == nil {
-			err = e
-			continue
-		}
-		if e == nil {
-			continue
-		}
-		err = errors.WithMessage(err, e.Error())
-	}
-	return
 }
 
 func try(fns ...func() error) (err error) {
 	for _, fn := range fns {
 		if fn != nil {
-			err = checkerr(err, fn())
+			err = errutil.Join(err, fn())
 		}
 	}
 	return

@@ -14,27 +14,28 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
 
-	"github.com/hectodns/hectodns/hectoserver"
-	"github.com/hectodns/hectodns/managedns"
+	"github.com/hectodns/hectodns/nameql"
+	"github.com/hectodns/hectodns/ns"
+	"github.com/hectodns/hectodns/ns/lookup"
 )
 
 type Proc struct {
 	ctx      context.Context
-	close    hectoserver.ShutdownFunc
-	shutdown hectoserver.ShutdownFunc
+	close    ns.ShutdownFunc
+	shutdown ns.ShutdownFunc
 
 	shutdownTimeout time.Duration
 
-	configs   []hectoserver.ServerConfig
-	listeners []hectoserver.Listener
+	configs   []ns.ServerConfig
+	listeners []ns.Listener
 
 	waitC chan struct{}
 }
 
-func NewProc(config *hectoserver.Config) (proc *Proc, err error) {
+func NewProc(config *ns.Config) (proc *Proc, err error) {
 	var (
-		closers     []hectoserver.ShutdownFunc
-		shutdowners []hectoserver.ShutdownFunc
+		closers     []ns.Shutdowner
+		shutdowners []ns.Shutdowner
 	)
 
 	// Put the global logger into the context.
@@ -46,8 +47,8 @@ func NewProc(config *hectoserver.Config) (proc *Proc, err error) {
 
 	// Always configure shutdown and close functions.
 	defer func() {
-		proc.shutdown = hectoserver.MultiShutdown(shutdowners...)
-		proc.close = hectoserver.MultiShutdown(closers...)
+		proc.shutdown = ns.MultiShutdown(shutdowners...)
+		proc.close = ns.MultiShutdown(closers...)
 	}()
 
 	proc.shutdownTimeout, err = time.ParseDuration(config.ServerShutdownTimeout)
@@ -65,7 +66,7 @@ func NewProc(config *hectoserver.Config) (proc *Proc, err error) {
 			}
 		}
 
-		srv, err := hectoserver.CreateAndServe(ctx, &conf)
+		srv, err := lookup.CreateAndServe(ctx, &conf)
 
 		closers = append(closers, srv.Close)
 		shutdowners = append(shutdowners, srv.Shutdown)
@@ -74,13 +75,13 @@ func NewProc(config *hectoserver.Config) (proc *Proc, err error) {
 			return proc, err
 		}
 
-		lc := hectoserver.ListenConfig{
+		lc := ns.ListenConfig{
 			Addr:           conf.Listen,
 			MaxConns:       conf.MaxConns,
 			RequestTimeout: requestTimeout,
 		}
 
-		ln, err := hectoserver.Listen(conf.Proto, lc, srv.Handler)
+		ln, err := ns.Listen(conf.Proto, lc, srv.Handler)
 		if err != nil {
 			return proc, err
 		}
@@ -106,13 +107,15 @@ func (p *Proc) Spawn() (err error) {
 
 	for i, ln := range p.listeners {
 		wg.Add(1)
-		go func(i int, ln hectoserver.Listener) {
+		go func(i int, ln ns.Listener) {
 			errs[i] = ln.ListenAndServe()
 			wg.Done()
 		}(i, ln)
 	}
 
-	srv := http.Server{Addr: ":3000", Handler: managedns.HandleGraphQL()}
+	httpHandler := nameql.NewHandler(nameql.StubBackend{})
+	srv := http.Server{Addr: ":3000", Handler: httpHandler}
+
 	go srv.ListenAndServe()
 
 	var (
@@ -122,8 +125,8 @@ func (p *Proc) Spawn() (err error) {
 
 	// Add HTTP server shutdowners in order to properly terminate
 	// the client requests.
-	p.shutdown = hectoserver.MultiShutdown(origShutdown, srv.Shutdown)
-	p.close = hectoserver.MultiShutdown(origClose, srv.Shutdown)
+	p.shutdown = ns.MultiShutdown(origShutdown, ns.ShutdownFunc(srv.Shutdown))
+	p.close = ns.MultiShutdown(origClose, ns.ShutdownFunc(srv.Shutdown))
 
 	wg.Wait()
 
@@ -212,7 +215,7 @@ func main() {
 			}
 		}()
 
-		config, err := hectoserver.DecodeConfig(opts.configFile)
+		config, err := ns.DecodeConfig(opts.configFile)
 		if err != nil {
 			log.Fatal().Msg(err.Error())
 		}

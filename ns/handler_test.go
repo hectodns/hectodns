@@ -1,4 +1,4 @@
-package hectoserver
+package ns
 
 import (
 	"context"
