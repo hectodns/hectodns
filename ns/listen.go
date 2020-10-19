@@ -1,4 +1,4 @@
-package hectoserver
+package ns
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/hectodns/hectodns/internal/errutil"
 
 	"github.com/miekg/dns"
 	"github.com/rs/zerolog/log"
@@ -21,10 +23,49 @@ var (
 	ErrProtoUnknown = Error{err: "unknown protocol"}
 )
 
+type Shutdowner interface {
+	Shutdown(context.Context) error
+}
+
+// ShutdownFunc tells a handler to terminate its work. ShutdownFunc
+// waits for the work to stop. A ShutdownFunc may be called by multiple
+// goroutines simultaneously.
+type ShutdownFunc func(context.Context) error
+
+func (fn ShutdownFunc) Shutdown(ctx context.Context) error {
+	return fn(ctx)
+}
+
+// ShutdownAll executes all passed ShutdownFunc concurrently.
+func ShutdownAll(ctx context.Context, ss ...Shutdowner) (err error) {
+	errC := make(chan error, len(ss))
+
+	for _, s := range ss {
+		go func(s Shutdowner) {
+			if s != nil {
+				errC <- s.Shutdown(ctx)
+			} else {
+				errC <- nil
+			}
+		}(s)
+	}
+
+	for i := 0; i < len(ss); i++ {
+		err = errutil.Join(err, <-errC)
+	}
+	return
+}
+
+func MultiShutdown(ss ...Shutdowner) ShutdownFunc {
+	return func(ctx context.Context) error {
+		return ShutdownAll(ctx, ss...)
+	}
+}
+
 // Server describes an interface to start and terminate a server.
 type Listener interface {
 	ListenAndServe() error
-	Shutdown(context.Context) error
+	Shutdowner
 }
 
 // loggingListener is a listener that puts address information into the log.
@@ -58,7 +99,7 @@ func Listen(proto string, lc ListenConfig, h Handler) (Listener, error) {
 
 	if lc.RequestTimeout != 0 {
 		// Add a timeout for processing each request.
-		h = timeoutHandler{Handler: h, timeout: lc.RequestTimeout}
+		h = TimeoutHandler(h, lc.RequestTimeout)
 		log.Debug().Msgf("set %s request timeout", lc.RequestTimeout)
 	}
 

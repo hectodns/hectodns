@@ -9,7 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/hectodns/hectodns/hectoserver"
+	"github.com/hectodns/hectodns/ns"
 )
 
 // CoreHandler is an interface for CoreDNS plugins without the Name
@@ -42,13 +42,13 @@ func ServeCore(h CoreHandler) {
 	Log.Debug("starting...")
 
 	for {
-		req, err := hectoserver.ReadRequest(buf.Reader)
+		req, err := ns.ReadRequest(buf.Reader)
 		if err != nil {
 			Log.Error(err.Error())
 			return
 		}
 
-		fwh, err := hectoserver.ParseForwarded(req.Header.Get("Forwarded"))
+		fwh, err := ns.ParseForwarded(req.Header.Get("Forwarded"))
 		if err != nil {
 			Log.Error(err.Error())
 			return
@@ -71,7 +71,7 @@ func ServeCore(h CoreHandler) {
 			return
 		}
 
-		resp := hectoserver.NewResponse(*rw.msg)
+		resp := ns.NewResponse(*rw.msg)
 
 		err = resp.Write(buf)
 		if err != nil {

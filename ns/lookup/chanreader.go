@@ -1,4 +1,4 @@
-package hectoserver
+package lookup
 
 import (
 	"bufio"

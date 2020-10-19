@@ -1,49 +1,20 @@
-package hectoserver
+package lookup
 
 import (
 	"context"
 	"sync"
 	"sync/atomic"
 
+	"github.com/hectodns/hectodns/ns"
+
 	"github.com/rs/zerolog"
 	"github.com/zclconf/go-cty/cty/json"
 )
 
-// ShutdownFunc tells a handler to terminate its work. ShutdownFunc
-// waits for the work to stop. A ShutdownFunc may be called by multiple
-// goroutines simultaneously.
-type ShutdownFunc func(context.Context) error
-
-// ShutdownAll executes all passed ShutdownFunc concurrently.
-func ShutdownAll(ctx context.Context, fn ...ShutdownFunc) (err error) {
-	errC := make(chan error, len(fn))
-
-	for _, f := range fn {
-		go func(f ShutdownFunc) {
-			if f != nil {
-				errC <- f(ctx)
-			} else {
-				errC <- nil
-			}
-		}(f)
-	}
-
-	for i := 0; i < len(fn); i++ {
-		err = checkerr(err, <-errC)
-	}
-	return
-}
-
-func MultiShutdown(fn ...ShutdownFunc) ShutdownFunc {
-	return func(ctx context.Context) error {
-		return ShutdownAll(ctx, fn...)
-	}
-}
-
 type Server struct {
-	Handler
-	Shutdown ShutdownFunc
-	Close    ShutdownFunc
+	ns.Handler
+	Shutdown ns.Shutdowner
+	Close    ns.Shutdowner
 }
 
 // CreateAndServe creates new connections to the specifies resolvers,
@@ -52,17 +23,17 @@ type Server struct {
 // Method returns Shutdown and Close functions to control lifetime of the
 // handler, after calling it, handler will return an error on attempt to
 // process a new request.
-func CreateAndServe(ctx context.Context, config *ServerConfig) (s Server, err error) {
+func CreateAndServe(ctx context.Context, config *ns.ServerConfig) (s Server, err error) {
 	var (
-		handlers    = make([]Handler, len(config.Resolvers))
-		shutdowners = make([]ShutdownFunc, len(config.Resolvers))
-		closers     = make([]ShutdownFunc, len(config.Resolvers))
+		handlers    = make([]ns.Handler, len(config.Resolvers))
+		shutdowners = make([]ns.Shutdowner, len(config.Resolvers))
+		closers     = make([]ns.Shutdowner, len(config.Resolvers))
 	)
 
 	defer func() {
-		s.Shutdown = MultiShutdown(shutdowners...)
-		s.Close = MultiShutdown(closers...)
-		s.Handler = MultiHandler(handlers...)
+		s.Shutdown = ns.MultiShutdown(shutdowners...)
+		s.Close = ns.MultiShutdown(closers...)
+		s.Handler = ns.MultiHandler(handlers...)
 	}()
 
 	for i, r := range config.Resolvers {
@@ -103,8 +74,8 @@ func CreateAndServe(ctx context.Context, config *ServerConfig) (s Server, err er
 		}
 
 		handlers[i] = pool
-		shutdowners[i] = pool.Shutdown
-		closers[i] = pool.Close
+		shutdowners[i] = ns.ShutdownFunc(pool.Shutdown)
+		closers[i] = ns.ShutdownFunc(pool.Close)
 	}
 
 	return s, nil
@@ -156,27 +127,27 @@ func (pool *ConnPool) Close(ctx context.Context) error {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
-	fn := make([]ShutdownFunc, len(pool.conns))
+	fn := make([]ns.Shutdowner, len(pool.conns))
 	for i, conn := range pool.conns {
-		fn[i] = conn.Close
+		fn[i] = ns.ShutdownFunc(conn.Close)
 	}
 
-	return ShutdownAll(ctx, fn...)
+	return ns.ShutdownAll(ctx, fn...)
 }
 
 func (pool *ConnPool) Shutdown(ctx context.Context) error {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
-	fn := make([]ShutdownFunc, len(pool.conns))
+	fn := make([]ns.Shutdowner, len(pool.conns))
 	for i, conn := range pool.conns {
-		fn[i] = conn.Shutdown
+		fn[i] = ns.ShutdownFunc(conn.Shutdown)
 	}
 
-	return ShutdownAll(ctx, fn...)
+	return ns.ShutdownAll(ctx, fn...)
 }
 
-func (pool *ConnPool) Handle(ctx context.Context, req *Request) (*Response, error) {
+func (pool *ConnPool) Handle(ctx context.Context, req *ns.Request) (*ns.Response, error) {
 	// There is no guarantee, that current position does not exceed
 	// cap, use modulo in order to ensure this.
 	pos := atomic.AddInt32(&pool.pos, 1)
