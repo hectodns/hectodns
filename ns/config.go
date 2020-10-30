@@ -73,10 +73,15 @@ type ServerConfig struct {
 
 // Config is a structure that holds configurations for the whole DNS server.
 type Config struct {
+	// ServerStoragePath is the location of the database file to keep
+	// zones and associated records.
+	ServerStoragePath string `hcl:"server_storage_path,optional"`
+
 	// ServerShutdownTimeout specifies a timeout for graceful shutdown
 	// of a server. When timeout expires, the termination will be enforced.
 	ServerShutdownTimeout string `hcl:"server_shutdown_timeout,optional"`
 
+	// Servers is a list of servers to process user requests.
 	Servers []ServerConfig `hcl:"server,block"`
 }
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/hectodns/hectodns/nameql"
 	"github.com/hectodns/hectodns/ns"
+	"github.com/hectodns/hectodns/ns/localdb"
 	"github.com/hectodns/hectodns/ns/lookup"
 )
 
@@ -23,10 +24,11 @@ type Proc struct {
 	ctx      context.Context
 	close    ns.ShutdownFunc
 	shutdown ns.ShutdownFunc
+	namedb   nameql.Backend
 
 	shutdownTimeout time.Duration
 
-	configs   []ns.ServerConfig
+	config    ns.Config
 	listeners []ns.Listener
 
 	waitC chan struct{}
@@ -41,8 +43,9 @@ func NewProc(config *ns.Config) (proc *Proc, err error) {
 	// Put the global logger into the context.
 	ctx := log.Logger.WithContext(context.Background())
 	proc = &Proc{
-		ctx:   ctx,
-		waitC: make(chan struct{}),
+		config: *config,
+		ctx:    ctx,
+		waitC:  make(chan struct{}),
 	}
 
 	// Always configure shutdown and close functions.
@@ -55,6 +58,13 @@ func NewProc(config *ns.Config) (proc *Proc, err error) {
 	if err != nil {
 		return proc, err
 	}
+
+	namedb, err := localdb.NewStorage(config.ServerStoragePath)
+	if err != nil {
+		return proc, err
+	}
+
+	proc.namedb = namedb
 
 	for _, conf := range config.Servers {
 		var requestTimeout time.Duration
@@ -86,7 +96,6 @@ func NewProc(config *ns.Config) (proc *Proc, err error) {
 			return proc, err
 		}
 
-		proc.configs = append(proc.configs, conf)
 		proc.listeners = append(proc.listeners, ln)
 	}
 
@@ -113,7 +122,7 @@ func (p *Proc) Spawn() (err error) {
 		}(i, ln)
 	}
 
-	httpHandler := nameql.NewHandler(nameql.StubBackend{})
+	httpHandler := nameql.NewHandler(p.namedb)
 	srv := http.Server{Addr: ":3000", Handler: httpHandler}
 
 	go srv.ListenAndServe()
@@ -142,6 +151,7 @@ func (p *Proc) Spawn() (err error) {
 
 func (p *Proc) Kill() error {
 	defer close(p.waitC)
+	defer p.namedb.Close(p.ctx)
 	defer p.close(p.ctx)
 
 	for _, ln := range p.listeners {
@@ -152,6 +162,7 @@ func (p *Proc) Kill() error {
 
 func (p *Proc) Quit() error {
 	defer close(p.waitC)
+	defer p.namedb.Close(p.ctx)
 
 	var (
 		ctx    = p.ctx
