@@ -1,7 +1,13 @@
 package ns
 
 import (
+	"errors"
 	"time"
+)
+
+var (
+	ErrZoneNotFound   = errors.New("zone not found")
+	ErrRecordNotFound = errors.New("record not found")
 )
 
 type ZoneInput struct {
@@ -33,6 +39,7 @@ type RecordInput struct {
 }
 
 type Record struct {
+	ID        int64   `json:"id"`
 	ZoneName  string  `json:"zoneName"`
 	TTL       int     `json:"ttl"`
 	Name      string  `json:"name"`
@@ -44,8 +51,9 @@ type Record struct {
 	UpdatedAt int64   `json:"updatedAt"`
 }
 
-func NewRecord(input RecordInput) Record {
+func NewRecord(id int64, input RecordInput) Record {
 	return Record{
+		ID:        id,
 		ZoneName:  input.ZoneName,
 		TTL:       input.TTL,
 		Name:      input.Name,
