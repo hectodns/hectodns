@@ -2,7 +2,9 @@ package localdb
 
 import (
 	"context"
+	"encoding"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/hectodns/hectodns/ns"
@@ -13,37 +15,23 @@ import (
 )
 
 const (
-	zonesBucketName = "zones"
+	origin = "@"
 )
 
-// Local storage keeps records altogether with zone information within
-// a single key. This structure represents joined zone information.
-type Row struct {
-	// Seq is updated each time, when the row is replaced, the new
-	// sequence number if used to set a unique identifier for records.
-	Seq int64
-
-	ns.Zone
-	Records []ns.Record `json:"records"`
+type ZoneRow struct {
+	Zone ns.Zone `json:"zone"`
 }
 
-func unmarshalRow(b []byte) (*Row, error) {
-	if b == nil {
-		return nil, nil
-	}
-
-	// Allocate the new instance of a row, and unmarshal the JSON.
-	var row Row
-	err := json.Unmarshal(b, &row)
-
-	if err != nil {
-		return nil, err
-	}
-	return &row, nil
+type RecordRow struct {
+	Record ns.Record `json:"record"`
 }
 
 type Storage struct {
 	conn *bbolt.DB
+}
+
+type Row interface {
+	encoding.BinaryMarshaler
 }
 
 func NewStorage(path string) (*Storage, error) {
@@ -56,11 +44,6 @@ func NewStorage(path string) (*Storage, error) {
 	log.Info().Msgf("opened the storage %q", path)
 	storage := Storage{conn: conn}
 
-	if err = storage.init(); err != nil {
-		defer storage.Close(context.TODO())
-		return nil, err
-	}
-
 	return &storage, nil
 }
 
@@ -68,69 +51,24 @@ func (s *Storage) Close(ctx context.Context) error {
 	return s.conn.Close()
 }
 
-func (s *Storage) init() error {
-	return s.conn.Update(func(tx *bbolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(zonesBucketName))
-		return err
-	})
-}
-
-func (s *Storage) getZones(tx *bbolt.Tx) (*bbolt.Bucket, error) {
-	bucket := tx.Bucket([]byte(zonesBucketName))
-	if bucket == nil {
-		return nil, errors.Errorf("corrupted storage, %q does not exist", zonesBucketName)
-	}
-	return bucket, nil
-}
-
-func (s *Storage) replace(name string, fn func(oldrow *Row) (Row, error)) (
-	newrow Row, err error,
-) {
-	if err = s.conn.Update(func(tx *bbolt.Tx) error {
-		zones, err := s.getZones(tx)
-		if err != nil {
-			return err
-		}
-
-		seq, err := zones.NextSequence()
-		if err != nil {
-			return err
-		}
-
-		row, err := unmarshalRow(zones.Get([]byte(name)))
-		if err != nil {
-			return err
-		} else {
-			row.Seq = int64(seq)
-		}
-
-		newrow, err = fn(row)
-
-		if err != nil {
-			return err
-		}
-
-		b, err := json.Marshal(newrow)
-		if err != nil {
-			return err
-		}
-		return zones.Put([]byte(name), b)
-	}); err != nil {
-		return Row{}, err
-	}
-
-	return newrow, err
-}
-
 func (s *Storage) CreateZone(ctx context.Context, input ns.ZoneInput) (
 	zone *ns.Zone, err error,
 ) {
-	var (
-		row Row
-	)
+	row := ZoneRow{Zone: ns.NewZone(input)}
 
-	if row, err = s.replace(input.Name, func(_ *Row) (Row, error) {
-		return Row{Zone: ns.NewZone(input)}, nil
+	if err := s.conn.Update(func(tx *bbolt.Tx) error {
+		zone, err := tx.CreateBucketIfNotExists([]byte(row.Zone.Name))
+		if err != nil {
+			return err
+		}
+
+		_, err = zone.CreateBucketIfNotExists([]byte("records"))
+		if err != nil {
+			return err
+		}
+
+		// TODO: create SOA record on zone creation.
+		return nil
 	}); err != nil {
 		return nil, err
 	}
@@ -141,47 +79,67 @@ func (s *Storage) CreateZone(ctx context.Context, input ns.ZoneInput) (
 func (s *Storage) CreateRecord(ctx context.Context, input ns.RecordInput) (
 	r *ns.Record, err error,
 ) {
-	var (
-		idx int
-		row Row
-	)
+	var rr *ns.Record
 
-	// On record creation replace a whole zone with an updated list of records.
-	if row, err = s.replace(input.ZoneName, func(row *Row) (Row, error) {
-		if row == nil {
-			return Row{}, errors.WithMessagef(ns.ErrZoneNotFound, input.ZoneName)
+	if err := s.conn.Update(func(tx *bbolt.Tx) error {
+		root := tx.Bucket([]byte(input.ZoneName))
+		if root == nil {
+			return errors.WithMessagef(err, "zone %q not found", input.ZoneName)
 		}
 
-		// TODO: organize records in the radix tree for a fast lookup.
-		row.Records = append(row.Records, ns.NewRecord(row.Seq, input))
-		idx = len(row.Records) - 1
+		records := root.Bucket([]byte("records"))
 
-		return *row, nil
-	}); err != nil {
-		return nil, err
-	}
+		id, _ := records.NextSequence()
+		rec := ns.NewRecord(int64(id), input)
+		rr = &rec
 
-	return &row.Records[idx], nil
-}
-
-func (s *Storage) QueryZones(ctx context.Context) ([]ns.Zone, error) {
-	return nil, nil
-}
-
-func (s *Storage) QueryRecords(ctx context.Context) (rr []ns.Record, err error) {
-	var row *Row
-
-	if err = s.conn.View(func(tx *bbolt.Tx) error {
-		zones, err := s.getZones(tx)
+		b, err := json.Marshal(RecordRow{Record: *rr})
 		if err != nil {
 			return err
 		}
 
-		row, err = unmarshalRow(zones.Get([]byte("google.com")))
-		return err
+		return records.Put([]byte(strconv.FormatInt(int64(id), 10)), b)
 	}); err != nil {
 		return nil, err
 	}
 
-	return row.Records, nil
+	return rr, nil
+}
+
+func (s *Storage) QueryZones(ctx context.Context) ([]ns.Zone, error) {
+	var zones []ns.Zone
+
+	if err := s.conn.View(func(tx *bbolt.Tx) error {
+		return tx.ForEach(func(name []byte, row *bbolt.Bucket) error {
+			zones = append(zones, ns.Zone{Name: string(name)})
+			return nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+
+	return zones, nil
+}
+
+func (s *Storage) QueryRecords(ctx context.Context) (rr []ns.Record, err error) {
+	if err := s.conn.View(func(tx *bbolt.Tx) error {
+		return tx.ForEach(func(_ []byte, zone *bbolt.Bucket) error {
+			records := zone.Bucket([]byte("records"))
+
+			return records.ForEach(func(k, v []byte) error {
+				var r RecordRow
+				err := json.Unmarshal(v, &r)
+				if err != nil {
+					return err
+				}
+
+				rr = append(rr, r.Record)
+				return nil
+			})
+		})
+	}); err != nil {
+		return nil, err
+	}
+
+	return rr, nil
 }
