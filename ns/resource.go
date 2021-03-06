@@ -20,8 +20,8 @@ type Zone struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
-func NewZone(input ZoneInput) Zone {
-	return Zone{
+func NewZone(input ZoneInput) *Zone {
+	return &Zone{
 		Name:      input.Name,
 		CreatedAt: time.Now().Unix(),
 		UpdatedAt: time.Now().Unix(),
@@ -30,7 +30,7 @@ func NewZone(input ZoneInput) Zone {
 
 type RecordInput struct {
 	ZoneName string  `json:"zoneName"`
-	TTL      int     `json:"ttl"`
+	TTL      uint    `json:"ttl"`
 	Name     string  `json:"name"`
 	Class    *string `json:"class"`
 	Type     string  `json:"type"`
@@ -39,9 +39,9 @@ type RecordInput struct {
 }
 
 type Record struct {
-	ID        int64   `json:"id"`
+	ID        uint64  `json:"id"`
 	ZoneName  string  `json:"zoneName"`
-	TTL       int     `json:"ttl"`
+	TTL       uint    `json:"ttl"`
 	Name      string  `json:"name"`
 	Class     *string `json:"class"`
 	Type      string  `json:"type"`
@@ -51,8 +51,8 @@ type Record struct {
 	UpdatedAt int64   `json:"updatedAt"`
 }
 
-func NewRecord(id int64, input RecordInput) Record {
-	return Record{
+func NewRecord(id uint64, input RecordInput) *Record {
+	return &Record{
 		ID:        id,
 		ZoneName:  input.ZoneName,
 		TTL:       input.TTL,
