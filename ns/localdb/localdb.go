@@ -3,6 +3,8 @@ package localdb
 import (
 	"context"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hectodns/hectodns/ns"
@@ -13,39 +15,20 @@ import (
 )
 
 const (
-	zonesBucketName = "zones"
+	origin = "$ORIGIN"
+	sep    = "."
 )
 
-// Local storage keeps records altogether with zone information within
-// a single key. This structure represents joined zone information.
-type Row struct {
-	// Seq is updated each time, when the row is replaced, the new
-	// sequence number if used to set a unique identifier for records.
-	Seq int64
-
-	ns.Zone
-	Records []ns.Record `json:"records"`
-}
-
-func unmarshalRow(b []byte) (*Row, error) {
-	if b == nil {
-		return nil, nil
-	}
-
-	// Allocate the new instance of a row, and unmarshal the JSON.
-	var row Row
-	err := json.Unmarshal(b, &row)
-
-	if err != nil {
-		return nil, err
-	}
-	return &row, nil
-}
-
+// Storage is an implementation of a nameql.Backend interface that performs management
+// of zones and resource records. The Storage utilize file-based storage to keep the
+// data persisted on disk.
 type Storage struct {
 	conn *bbolt.DB
 }
 
+// NewStorage creates a new instance of storage for the given path.
+//
+// Method returns an error when file system is unavailable for more than 1 second.
 func NewStorage(path string) (*Storage, error) {
 	// Prevent hangs on file opening and wait only for a second.
 	conn, err := bbolt.Open(path, 0600, &bbolt.Options{Timeout: time.Second})
@@ -54,134 +37,104 @@ func NewStorage(path string) (*Storage, error) {
 	}
 
 	log.Info().Msgf("opened the storage %q", path)
-	storage := Storage{conn: conn}
-
-	if err = storage.init(); err != nil {
-		defer storage.Close(context.TODO())
-		return nil, err
-	}
-
-	return &storage, nil
+	return &Storage{conn: conn}, nil
 }
 
+// Close closes the storage.
 func (s *Storage) Close(ctx context.Context) error {
 	return s.conn.Close()
 }
 
-func (s *Storage) init() error {
-	return s.conn.Update(func(tx *bbolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(zonesBucketName))
-		return err
-	})
-}
-
-func (s *Storage) getZones(tx *bbolt.Tx) (*bbolt.Bucket, error) {
-	bucket := tx.Bucket([]byte(zonesBucketName))
-	if bucket == nil {
-		return nil, errors.Errorf("corrupted storage, %q does not exist", zonesBucketName)
-	}
-	return bucket, nil
-}
-
-func (s *Storage) replace(name string, fn func(oldrow *Row) (Row, error)) (
-	newrow Row, err error,
-) {
-	if err = s.conn.Update(func(tx *bbolt.Tx) error {
-		zones, err := s.getZones(tx)
-		if err != nil {
-			return err
-		}
-
-		seq, err := zones.NextSequence()
-		if err != nil {
-			return err
-		}
-
-		row, err := unmarshalRow(zones.Get([]byte(name)))
-		if err != nil {
-			return err
-		} else {
-			row.Seq = int64(seq)
-		}
-
-		newrow, err = fn(row)
-
-		if err != nil {
-			return err
-		}
-
-		b, err := json.Marshal(newrow)
-		if err != nil {
-			return err
-		}
-		return zones.Put([]byte(name), b)
-	}); err != nil {
-		return Row{}, err
-	}
-
-	return newrow, err
-}
-
+// CreateZone creates a new bucket with the specified zone name and puts zone
+// information into the $ORIGIN key.
 func (s *Storage) CreateZone(ctx context.Context, input ns.ZoneInput) (
 	zone *ns.Zone, err error,
 ) {
-	var (
-		row Row
-	)
-
-	if row, err = s.replace(input.Name, func(_ *Row) (Row, error) {
-		return Row{Zone: ns.NewZone(input)}, nil
-	}); err != nil {
-		return nil, err
-	}
-
-	return &row.Zone, nil
-}
-
-func (s *Storage) CreateRecord(ctx context.Context, input ns.RecordInput) (
-	r *ns.Record, err error,
-) {
-	var (
-		idx int
-		row Row
-	)
-
-	// On record creation replace a whole zone with an updated list of records.
-	if row, err = s.replace(input.ZoneName, func(row *Row) (Row, error) {
-		if row == nil {
-			return Row{}, errors.WithMessagef(ns.ErrZoneNotFound, input.ZoneName)
+	zone = ns.NewZone(input)
+	if err = s.conn.Update(func(tx *bbolt.Tx) error {
+		zoneBucket, err := tx.CreateBucketIfNotExists([]byte(input.Name))
+		if err != nil {
+			return errors.WithMessagef(err, "zone %q was not created", input.Name)
 		}
 
-		// TODO: organize records in the radix tree for a fast lookup.
-		row.Records = append(row.Records, ns.NewRecord(row.Seq, input))
-		idx = len(row.Records) - 1
-
-		return *row, nil
-	}); err != nil {
-		return nil, err
-	}
-
-	return &row.Records[idx], nil
-}
-
-func (s *Storage) QueryZones(ctx context.Context) ([]ns.Zone, error) {
-	return nil, nil
-}
-
-func (s *Storage) QueryRecords(ctx context.Context) (rr []ns.Record, err error) {
-	var row *Row
-
-	if err = s.conn.View(func(tx *bbolt.Tx) error {
-		zones, err := s.getZones(tx)
+		zoneBytes, err := json.Marshal(zone)
 		if err != nil {
 			return err
 		}
 
-		row, err = unmarshalRow(zones.Get([]byte("google.com")))
-		return err
+		return zoneBucket.Put([]byte(origin), zoneBytes)
 	}); err != nil {
 		return nil, err
 	}
+	return zone, nil
+}
 
-	return row.Records, nil
+// selectZone returns a zone bucket with the specified name.
+//
+// Returns ns.ErrZoneNotFound when the database is missing zone with given name.
+func (s *Storage) selectZone(tx *bbolt.Tx, zoneName string) (*bbolt.Bucket, error) {
+	zone := tx.Bucket([]byte(zoneName))
+	if zone == nil {
+		return nil, errors.WithMessagef(ns.ErrZoneNotFound, zoneName)
+	}
+	return zone, nil
+}
+
+// CreateRecord creates a new record within a specified zone, puts resource record
+// information into the separate bucket.
+//
+// The method works in append-only format, does not support replacement operation.
+func (s *Storage) CreateRecord(ctx context.Context, input ns.RecordInput) (
+	record *ns.Record, err error,
+) {
+	if err = s.conn.Update(func(tx *bbolt.Tx) error {
+		zoneBucket, err := s.selectZone(tx, input.ZoneName)
+		if err != nil {
+			return err
+		}
+
+		// Assign a new sequence number in order to differentiate the records by
+		// their keys. The transaction is writable, therefore no need to validate
+		// the returned error.
+		id, _ := zoneBucket.NextSequence()
+		key := strings.Join([]string{input.Name, strconv.FormatUint(id, 10)}, sep)
+
+		record = ns.NewRecord(id, input)
+		recordBytes, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+
+		return zoneBucket.Put([]byte(key), recordBytes)
+	}); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+func (s *Storage) QueryZones(ctx context.Context) (zones []ns.Zone, err error) {
+	if err = s.conn.View(func(tx *bbolt.Tx) error {
+		return tx.ForEach(func(name []byte, b *bbolt.Bucket) error {
+			zoneBytes := b.Get([]byte(origin))
+			if zoneBytes == nil {
+				return errors.Errorf("zone %q corrupted, no origin", name)
+			}
+
+			var zone ns.Zone
+			err := json.Unmarshal(zoneBytes, &zone)
+			if err != nil {
+				return errors.WithMessagef(err, "zone %q corrupted, invalid data", name)
+			}
+
+			zones = append(zones, zone)
+			return nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+	return zones, nil
+}
+
+func (s *Storage) QueryRecords(ctx context.Context) (records []ns.Record, err error) {
+	return nil, nil
 }

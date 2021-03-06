@@ -3,6 +3,7 @@ module github.com/hectodns/hectodns
 go 1.12
 
 require (
+	github.com/google/gofuzz v1.0.0
 	github.com/hashicorp/hcl/v2 v2.7.0
 	github.com/miekg/dns v1.1.35
 	github.com/pkg/errors v0.9.1
