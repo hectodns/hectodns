@@ -41,16 +41,20 @@ func TestStorage_CreateZone_ok(t *testing.T) {
 	f.Fuzz(&zoneName)
 
 	zoneInput := ns.ZoneInput{Name: zoneName}
-	zone, err := s.CreateZone(context.TODO(), zoneInput)
+	zone0, err := s.CreateZone(context.TODO(), zoneInput)
 
 	require.NoError(t, err)
-	require.NotNil(t, zone)
+	require.NotNil(t, zone0)
 
-	assert.Equal(t, zoneName, zone.Name)
-	assert.True(t, zone.CreatedAt > 0)
-	assert.True(t, zone.UpdatedAt > 0)
+	assert.Equal(t, zoneName, zone0.Name)
+	assert.True(t, zone0.CreatedAt > 0)
+	assert.True(t, zone0.UpdatedAt > 0)
 
-	// TODO: query database to ensure zone is created.
+	zone1, err := s.QueryZone(context.TODO(), struct{ Name string }{zoneName})
+	require.NoError(t, err)
+	require.NotNil(t, zone1)
+
+	assert.Equal(t, zone0, zone1)
 }
 
 func TestStorage_CreateRecord_ok(t *testing.T) {
@@ -73,13 +77,19 @@ func TestStorage_CreateRecord_ok(t *testing.T) {
 	_, err := s.CreateZone(context.TODO(), zoneInput)
 	require.NoError(t, err)
 
-	record, err := s.CreateRecord(context.TODO(), recordInput)
+	record0, err := s.CreateRecord(context.TODO(), recordInput)
 	require.NoError(t, err)
-	require.NotNil(t, record)
+	require.NotNil(t, record0)
 
-	assert.Equal(t, recordName, record.Name)
-	assert.Equal(t, zoneName, record.ZoneName)
-	assert.True(t, record.ID != 0, "id must be set")
+	assert.Equal(t, recordName, record0.Name)
+	assert.Equal(t, zoneName, record0.ZoneName)
+	assert.True(t, record0.ID != 0, "id must be set")
 
-	// TODO: query database to ensure zone is created.
+	record1, err := s.QueryRecord(context.TODO(), struct {
+		ZoneName string
+		ID       uint64
+	}{zoneName, record0.ID})
+
+	require.NoError(t, err)
+	assert.Equal(t, record0, record1)
 }

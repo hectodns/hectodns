@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hectodns/hectodns/ns"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
-
 	"go.etcd.io/bbolt"
+
+	"github.com/hectodns/hectodns/ns"
 )
 
 const (
@@ -80,6 +80,54 @@ func (s *Storage) selectZone(tx *bbolt.Tx, zoneName string) (*bbolt.Bucket, erro
 	return zone, nil
 }
 
+// QueryZone attempts to find a zone by it's name.
+func (s *Storage) QueryZone(ctx context.Context, input struct{ Name string }) (*ns.Zone, error) {
+	var zone ns.Zone
+
+	query := func(tx *bbolt.Tx) error {
+		zoneBucket, err := s.selectZone(tx, input.Name)
+		if err != nil {
+			return err
+		}
+
+		zoneBytes := zoneBucket.Get([]byte(origin))
+		if zoneBytes == nil {
+			return errors.Errorf("zone %q corrupted, no origin", input.Name)
+		}
+
+		err = json.Unmarshal(zoneBytes, &zone)
+		return errors.WithMessagef(err, "zone %q corrupted, invalid data", input.Name)
+	}
+
+	if err := s.conn.View(query); err != nil {
+		return nil, err
+	}
+	return &zone, nil
+}
+
+func (s *Storage) QueryZones(ctx context.Context) (zones []ns.Zone, err error) {
+	if err = s.conn.View(func(tx *bbolt.Tx) error {
+		return tx.ForEach(func(name []byte, b *bbolt.Bucket) error {
+			zoneBytes := b.Get([]byte(origin))
+			if zoneBytes == nil {
+				return errors.Errorf("zone %q corrupted, no origin", name)
+			}
+
+			var zone ns.Zone
+			err := json.Unmarshal(zoneBytes, &zone)
+			if err != nil {
+				return errors.WithMessagef(err, "zone %q corrupted, invalid data", name)
+			}
+
+			zones = append(zones, zone)
+			return nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+	return zones, nil
+}
+
 // CreateRecord creates a new record within a specified zone, puts resource record
 // information into the separate bucket.
 //
@@ -112,27 +160,38 @@ func (s *Storage) CreateRecord(ctx context.Context, input ns.RecordInput) (
 	return record, nil
 }
 
-func (s *Storage) QueryZones(ctx context.Context) (zones []ns.Zone, err error) {
-	if err = s.conn.View(func(tx *bbolt.Tx) error {
-		return tx.ForEach(func(name []byte, b *bbolt.Bucket) error {
-			zoneBytes := b.Get([]byte(origin))
-			if zoneBytes == nil {
-				return errors.Errorf("zone %q corrupted, no origin", name)
-			}
+// QueryRecord attempts to find a record in a specified Zone with the ID.
+func (s *Storage) QueryRecord(ctx context.Context, input struct {
+	ZoneName string
+	ID       uint64
+}) (record *ns.Record, err error) {
+	query := func(tx *bbolt.Tx) error {
+		zoneBucket, err := s.selectZone(tx, input.ZoneName)
+		if err != nil {
+			return err
+		}
 
-			var zone ns.Zone
-			err := json.Unmarshal(zoneBytes, &zone)
-			if err != nil {
-				return errors.WithMessagef(err, "zone %q corrupted, invalid data", name)
+		cur := zoneBucket.Cursor()
+		keySuffix := sep + strconv.FormatUint(input.ID, 10)
+		for key, value := cur.First(); key != nil; key, value = cur.Next() {
+			if strings.HasSuffix(string(key), keySuffix) {
+				err = json.Unmarshal(value, &record)
+				if err != nil {
+					return err
+				}
+				break
 			}
+		}
+		return nil
+	}
 
-			zones = append(zones, zone)
-			return nil
-		})
-	}); err != nil {
+	if err = s.conn.View(query); err != nil {
 		return nil, err
 	}
-	return zones, nil
+	if record == nil {
+		return nil, errors.Errorf("record id=%d in %q not found", input.ID, input.ZoneName)
+	}
+	return record, nil
 }
 
 func (s *Storage) QueryRecords(ctx context.Context) (records []ns.Record, err error) {
