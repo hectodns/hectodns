@@ -12,8 +12,14 @@ import (
 
 type Backend interface {
 	CreateZone(ctx context.Context, input ns.ZoneInput) (*ns.Zone, error)
-	CreateRecord(ctx context.Context, input ns.RecordInput) (*ns.Record, error)
+	QueryZone(ctx context.Context, input struct{ Name string }) (*ns.Zone, error)
 	QueryZones(ctx context.Context) ([]ns.Zone, error)
+
+	CreateRecord(ctx context.Context, input ns.RecordInput) (*ns.Record, error)
+	QueryRecord(ctx context.Context, input struct {
+		ZoneName string
+		ID       uint64
+	}) (*ns.Record, error)
 	QueryRecords(ctx context.Context) ([]ns.Record, error)
 
 	Close(context.Context) error
@@ -40,13 +46,15 @@ func (b StubBackend) QueryRecords(context.Context) ([]ns.Record, error) {
 func NewHandler(backend Backend) http.Handler {
 	rs := resly.Server{Name: "hectodns"}
 
-	rs.AddType(resly.NewType(ns.ZoneInput{}, nil))
-	rs.AddType(resly.NewType(ns.Zone{}, nil))
-	rs.AddType(resly.NewType(ns.RecordInput{}, nil))
-	rs.AddType(resly.NewType(ns.Record{}, nil))
+	rs.HandleType(resly.NewType(ns.ZoneInput{}, nil))
+	rs.HandleType(resly.NewType(ns.Zone{}, nil))
+	rs.HandleType(resly.NewType(ns.RecordInput{}, nil))
+	rs.HandleType(resly.NewType(ns.Record{}, nil))
 
-	rs.AddQuery("zones", backend.QueryZones)
-	rs.AddQuery("records", backend.QueryRecords)
+	rs.HandleQuery("zone", backend.QueryZone)
+	rs.HandleQuery("zones", backend.QueryZones)
+	rs.HandleQuery("record", backend.QueryRecord)
+	rs.HandleQuery("records", backend.QueryRecords)
 
 	rs.HandleMutation("createZone", backend.CreateZone)
 	rs.HandleMutation("createRecord", backend.CreateRecord)
