@@ -24,7 +24,7 @@ type Proc struct {
 	ctx      context.Context
 	close    ns.ShutdownFunc
 	shutdown ns.ShutdownFunc
-	namedb   nameql.Backend
+	namedb   nameql.ActiveStorage
 
 	shutdownTimeout time.Duration
 
