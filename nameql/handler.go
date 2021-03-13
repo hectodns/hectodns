@@ -6,8 +6,8 @@ import (
 
 	"github.com/hectodns/hectodns/ns"
 
+	"github.com/activegraph/activegraph"
 	"github.com/pkg/errors"
-	"github.com/resly/resly"
 )
 
 type Backend interface {
@@ -44,20 +44,23 @@ func (b StubBackend) QueryRecords(context.Context) ([]ns.Record, error) {
 }
 
 func NewHandler(backend Backend) http.Handler {
-	rs := resly.Server{Name: "hectodns"}
+	rs := activegraph.Server{}
 
-	rs.HandleType(resly.NewType(ns.ZoneInput{}, nil))
-	rs.HandleType(resly.NewType(ns.Zone{}, nil))
-	rs.HandleType(resly.NewType(ns.RecordInput{}, nil))
-	rs.HandleType(resly.NewType(ns.Record{}, nil))
+	rs.HandleType(activegraph.NewType(ns.ZoneInput{}, nil))
+	rs.HandleType(activegraph.NewType(ns.Zone{}, nil))
+	{
+		rs.HandleQuery("zone", backend.QueryZone)
+		rs.HandleQuery("zones", backend.QueryZones)
+		rs.HandleMutation("createZone", backend.CreateZone)
+	}
 
-	rs.HandleQuery("zone", backend.QueryZone)
-	rs.HandleQuery("zones", backend.QueryZones)
-	rs.HandleQuery("record", backend.QueryRecord)
-	rs.HandleQuery("records", backend.QueryRecords)
-
-	rs.HandleMutation("createZone", backend.CreateZone)
-	rs.HandleMutation("createRecord", backend.CreateRecord)
+	rs.HandleType(activegraph.NewType(ns.RecordInput{}, nil))
+	rs.HandleType(activegraph.NewType(ns.Record{}, nil))
+	{
+		rs.HandleQuery("record", backend.QueryRecord)
+		rs.HandleQuery("records", backend.QueryRecords)
+		rs.HandleMutation("createRecord", backend.CreateRecord)
+	}
 
 	return rs.HandleHTTP()
 }

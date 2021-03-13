@@ -3,11 +3,11 @@ module github.com/hectodns/hectodns
 go 1.12
 
 require (
+	github.com/activegraph/activegraph v0.0.4-b
 	github.com/google/gofuzz v1.0.0
 	github.com/hashicorp/hcl/v2 v2.7.0
 	github.com/miekg/dns v1.1.35
 	github.com/pkg/errors v0.9.1
-	github.com/resly/resly v0.0.0-20210307154433-916303a9f57d
 	github.com/rs/zerolog v1.19.0
 	github.com/stretchr/testify v1.4.0
 	github.com/urfave/cli/v2 v2.2.0
