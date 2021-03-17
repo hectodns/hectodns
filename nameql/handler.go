@@ -20,7 +20,9 @@ type ActiveStorage interface {
 		ZoneName string
 		ID       uint64
 	}) (*ns.Record, error)
-	QueryRecords(ctx context.Context) ([]ns.Record, error)
+	QueryRecords(ctx context.Context, input struct {
+		ZoneName string
+	}) ([]ns.Record, error)
 
 	// OpenReadTransaction creates a new read-only transaction to execute the
 	// provided operation.
