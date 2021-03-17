@@ -235,6 +235,31 @@ func (s *Storage) QueryRecord(ctx context.Context, input struct {
 	return nil, errors.Errorf("record id=%d in %q not found", input.ID, input.ZoneName)
 }
 
-func (s *Storage) QueryRecords(ctx context.Context) (records []ns.Record, err error) {
-	return nil, nil
+func (s *Storage) QueryRecords(ctx context.Context, input struct {
+	ZoneName string
+}) ([]ns.Record, error) {
+	var records []ns.Record
+
+	tx, err := txFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	zoneBucket, err := s.selectZone(tx, input.ZoneName)
+	if err != nil {
+		return nil, err
+	}
+
+	cur := zoneBucket.Cursor()
+	for key, value := cur.First(); key != nil; key, value = cur.Next() {
+		var record ns.Record
+		err = json.Unmarshal(value, &record)
+		if err != nil {
+			return nil, err
+		}
+
+		records = append(records, record)
+	}
+
+	return records, nil
 }
